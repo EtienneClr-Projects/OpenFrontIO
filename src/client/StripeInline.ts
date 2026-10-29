@@ -77,7 +77,11 @@ let stripePromise: Promise<Stripe | null> | null = null;
 function getStripe(): Promise<Stripe | null> {
   const key = stripePublishableKey();
   if (key === null) return Promise.resolve(null);
-  stripePromise ??= loadStripe(key).catch((e: unknown) => {
+  // The assistant is the "stripe" pill Stripe.js pins to the bottom-right
+  // corner with a test key, i.e. on every dev and alpha page.
+  stripePromise ??= loadStripe(key, {
+    developerTools: { assistant: { enabled: false } },
+  }).catch((e: unknown) => {
     console.warn("getStripe: Stripe.js failed to load", e);
     stripePromise = null;
     return null;
@@ -141,6 +145,7 @@ export type InlineConfirmResult =
  */
 export class InlineCheckoutSession {
   private clientSecret: string | null = null;
+  private pendingUpdate: Promise<void> = Promise.resolve();
 
   private constructor(
     private readonly stripe: Stripe,
@@ -206,7 +211,7 @@ export class InlineCheckoutSession {
     this.request = request;
     if (amountCents !== this.amountCents) {
       this.amountCents = amountCents;
-      this.elements.update({ amount: amountCents });
+      this.pendingUpdate = this.elements.update({ amount: amountCents });
     }
     // Always dropped, even when only the request changed: a cached intent was
     // minted for the OLD request and the server will not reprice it.
@@ -252,6 +257,7 @@ export class InlineCheckoutSession {
   private async confirmInner(options: {
     receiptEmail?: string | null;
   }): Promise<InlineConfirmResult> {
+    await this.pendingUpdate;
     const { error: submitError } = await this.elements.submit();
     if (submitError) {
       // Validation problems ("incomplete card number") carry a message meant

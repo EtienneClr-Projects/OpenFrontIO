@@ -2,9 +2,11 @@ import { GameMap, TileRef } from "@openfront/engine-api/game/GameMap";
 import {
   Cell,
   ColoredTeams,
+  Difficulty,
   Duos,
   EmojiMessage,
   GameMode,
+  GameType,
   GameUpdates,
   HumansVsNations,
   MessageType,
@@ -26,10 +28,14 @@ import {
   GameUpdate,
   GameUpdateType,
 } from "@openfront/engine-api/game/GameUpdates";
-import { UnitPredicate } from "@openfront/engine-api/game/ReadViews";
+import {
+  ReadonlyTileSet,
+  UnitPredicate,
+} from "@openfront/engine-api/game/ReadViews";
 import {
   AllPlayersStats,
   ClientID,
+  GameID,
   Winner,
 } from "@openfront/engine-api/Schemas";
 import { ATTACK_INDEX_SENT } from "@openfront/engine-api/StatsSchemas";
@@ -60,6 +66,9 @@ import {
   SharedWaterCache,
   SharedWaterCacheSnapshot,
 } from "../execution/nation/SharedWaterCache";
+import { NationExecution } from "../execution/NationExecution";
+import { SpawnTimerExecution } from "../execution/SpawnTimerExecution";
+import { TribeExecution } from "../execution/TribeExecution";
 import { AbstractGraph } from "../pathfinding/algorithms/AbstractGraph";
 import { WaterPathFinder } from "../pathfinding/PathFinder";
 import { PathFinder } from "../pathfinding/types";
@@ -305,8 +314,34 @@ export class GameImpl implements Game {
       this._map.setFallout(tile, false);
     }
     this._territoryVersion++;
+    // Rail paths route around water, so a rail plan must be redone too.
+    this._structureVersion++;
     this._map.setWater(tile);
     this.recordTileUpdate(tile);
+  }
+
+  setTerrain(tiles: readonly TileRef[], terrain: readonly number[]): void {
+    this.recordTerrainChanges(this._waterManager.editTerrain(tiles, terrain));
+  }
+
+  endTerrainEdit(): void {
+    this.recordTerrainChanges(this._waterManager.endTerrainEdit());
+  }
+
+  downscaleMiniMap(): GameMap {
+    return this._waterManager.downscaleMiniMap();
+  }
+
+  rebuildWaterGraph(): void {
+    this._waterManager.rebuildWaterGraph();
+  }
+
+  private recordTerrainChanges(tiles: TileRef[]): void {
+    for (const tile of tiles) this.recordTileUpdate(tile);
+    if (tiles.length === 0) return;
+    this._territoryVersion++;
+    // Rail paths route around water, so a rail plan must be redone too.
+    this._structureVersion++;
   }
 
   queueWaterConversion(tile: TileRef): void {
@@ -549,10 +584,9 @@ export class GameImpl implements Game {
 
   private addViewResync(): void {
     const map = this._map as GameMapImpl;
-    const terrainEdited = new Set(map.editedTerrainTiles());
     const numTiles = map.width() * map.height();
     for (let tile = 0; tile < numTiles; tile++) {
-      if (map.tileState(tile) !== 0 || terrainEdited.has(tile)) {
+      if (map.tileState(tile) !== 0 || map.isTerrainEdited(tile)) {
         this.recordTileUpdate(tile);
       }
     }
@@ -647,8 +681,29 @@ export class GameImpl implements Game {
     for (const tile of waterChangedTiles) {
       this.recordTileUpdate(tile);
     }
+    // Queued conversions write the map directly, bypassing setWater.
+    if (waterChangedTiles.length > 0) this._structureVersion++;
     this._ticks++;
     return this.updates;
+  }
+
+  /**
+   * Hands over the updates made since the game started, without running a
+   * tick: what the scenario editor's commands changed, in an engine that
+   * never ticks. Players get their updates as at the end of a tick. (After a
+   * tick, the updates still hold that tick's, already handed over.)
+   */
+  drainPendingUpdates(): GameUpdates {
+    for (const player of this._playersBySmallID) {
+      const update = player.toUpdate(
+        this.playerStatsQuads,
+        this.attackTroopsQuads,
+      );
+      if (update !== null) this.addUpdate(update);
+    }
+    const updates = this.updates;
+    this.updates = createGameUpdatesMap();
+    return updates;
   }
 
   private recordTileUpdate(tile: TileRef): void {
@@ -731,6 +786,9 @@ export class GameImpl implements Game {
     this._players.forEach((p) => {
       hash += p.hash();
     });
+    // Rails are not units, so without this a divergence in which rails got
+    // built would only show up through the trains that later run on them.
+    hash += this._railNetwork.hash();
     return hash;
   }
 
@@ -779,6 +837,110 @@ export class GameImpl implements Game {
     );
   }
 
+  takeoverPlayer(player: Player | PlayerID, localClientID: ClientID): void {
+    const target = typeof player === "string" ? this.player(player) : player;
+
+    const oldClientID = target.clientID();
+    if (oldClientID !== null) {
+      this._stats.migrateClientID(oldClientID, localClientID);
+    }
+
+    // Remove any NationExecution or TribeExecution controlling this player
+    for (const exec of this.executions()) {
+      if (
+        (exec instanceof NationExecution || exec instanceof TribeExecution) &&
+        exec.playerID() === target.id()
+      ) {
+        this.removeExecution(exec);
+      }
+    }
+
+    // Update chosen player to be the local human
+    const chosenInfo = target.info();
+    const updatedChosenInfo = new PlayerInfo(
+      chosenInfo.name,
+      PlayerType.Human,
+      localClientID,
+      chosenInfo.id,
+      chosenInfo.isLobbyCreator,
+      chosenInfo.clanTag,
+      chosenInfo.friends,
+      chosenInfo.teamIndex,
+      chosenInfo.nationFlag,
+    );
+    target.setPlayerInfo(updatedChosenInfo);
+    target.markDisconnected(false);
+
+    this._humans = this._humans.filter((h) => h.id !== target.id());
+    this._humans.push(updatedChosenInfo);
+    this._nations = this._nations.filter(
+      (n) => n.playerInfo.id !== target.id(),
+    );
+  }
+
+  clearHumanPlayer(player: Player | PlayerID): void {
+    const target = typeof player === "string" ? this.player(player) : player;
+    const pInfo = target.info();
+    const updatedBotInfo = new PlayerInfo(
+      pInfo.name,
+      PlayerType.Nation,
+      null,
+      pInfo.id,
+      false,
+      pInfo.clanTag,
+      pInfo.friends,
+      pInfo.teamIndex,
+      pInfo.nationFlag,
+    );
+    target.setPlayerInfo(updatedBotInfo);
+    target.markDisconnected(false);
+
+    this._humans = this._humans.filter((h) => h.id !== target.id());
+  }
+
+  clearOtherHumans(keptPlayer: Player | PlayerID): void {
+    const target =
+      typeof keptPlayer === "string" ? this.player(keptPlayer) : keptPlayer;
+    this._humans = this._humans.filter((h) => h.id === target.id());
+  }
+
+  convertHumanToNation(player: Player | PlayerID, gameID: GameID): Execution {
+    const target = typeof player === "string" ? this.player(player) : player;
+    this.clearHumanPlayer(target);
+
+    this._nations = this._nations.filter(
+      (n) => n.playerInfo.id !== target.id(),
+    );
+    const spawnTile = target.spawnTile();
+    const spawnCell =
+      spawnTile !== undefined ? this.cell(spawnTile) : undefined;
+    const nation = new Nation(spawnCell, target.info());
+    this._nations.push(nation);
+
+    const nationExec = new NationExecution(gameID, nation);
+    this.addExecution(nationExec);
+    return nationExec;
+  }
+
+  applySingleplayerConfig(difficulty?: Difficulty): void {
+    this.config().setGameType(GameType.Singleplayer);
+    if (difficulty !== undefined) {
+      this.config().setDifficulty(difficulty);
+    }
+    for (const exec of this.executions()) {
+      if (exec instanceof SpawnTimerExecution) {
+        this.removeExecution(exec);
+      } else if (
+        difficulty !== undefined &&
+        exec instanceof NationExecution &&
+        exec.isActive() &&
+        exec.isInitialized()
+      ) {
+        exec.refreshDifficulty();
+      }
+    }
+  }
+
   playerView(id: PlayerID): Player {
     return this.player(id);
   }
@@ -795,6 +957,53 @@ export class GameImpl implements Game {
     this.nextPlayerID++;
     this._players.set(playerInfo.id, player);
     return player;
+  }
+
+  /** Scenario editor: a nation with no spawn, which gets land by set_owner. */
+  addNation(info: PlayerInfo): Player {
+    const player = this.addPlayer(info);
+    this._nations.push(new Nation(undefined, info));
+    return player;
+  }
+
+  /**
+   * Scenario editor: deletes the nation's structures, frees its land and
+   * forgets its id. Its small id stays taken, so what is left is a dead
+   * player that no longer appears under its id or among the nations.
+   */
+  removeNation(nation: Player): void {
+    for (const unit of [...nation.units()]) unit.delete(false);
+    for (const tile of [...nation.tiles()]) this.relinquish(tile);
+    this._players.delete(nation.id());
+    this._nations = this._nations.filter(
+      (n) => n.playerInfo.id !== nation.id(),
+    );
+  }
+
+  /**
+   * Scenario editor: brings back a nation removeNation removed, under its
+   * id and small id, as a new nation would start.
+   */
+  restoreNation(info: PlayerInfo): void {
+    const nation = this._playersBySmallID.find((p) => p.id() === info.id);
+    if (!(nation instanceof PlayerImpl) || this._players.has(info.id)) {
+      throw new Error(`no removed nation ${info.id}`);
+    }
+    nation.setPlayerInfo(info);
+    nation.setTroops(this.config().startManpower(info));
+    nation.setGold(this.config().startingGold(info));
+    nation.setPlayable(false);
+    this._players.set(info.id, nation);
+    this._nations.push(new Nation(undefined, info));
+  }
+
+  /** Scenario editor: renames a nation or changes its flag. */
+  setNationInfo(nation: Player, info: PlayerInfo): void {
+    nation.setPlayerInfo(info);
+    // The nation and its player share one PlayerInfo, as in a new game.
+    this._nations = this._nations.map((n) =>
+      n.playerInfo.id === info.id ? new Nation(n.spawnCell, info) : n,
+    );
   }
 
   private maybeAssignTeam(player: PlayerInfo): Team | null {
@@ -1231,6 +1440,26 @@ export class GameImpl implements Game {
     this._unitsVersion++;
   }
 
+  // Bumped when a City, Port or Factory is added or removed (the structures
+  // the rail network connects) and when land turns to water (rail paths route
+  // around it), so rail previews can be memoised while the trains, shells and
+  // boats that churn _unitsVersion come and go.
+  private _structureVersion = 0;
+  structureVersion(): number {
+    return this._structureVersion;
+  }
+  /** Call when a unit the rail network cares about appears, vanishes or changes visibility. */
+  noteStructureChange(u: Unit): void {
+    const type = u.type();
+    if (
+      type === UnitType.City ||
+      type === UnitType.Port ||
+      type === UnitType.Factory
+    ) {
+      this._structureVersion++;
+    }
+  }
+
   // Bumped on every change of tile ownership, fallout or land/water — i.e.
   // anything Player.nearby() can observe — so per-player answers can be memoised
   // for as long as nothing on the map moved.
@@ -1241,11 +1470,13 @@ export class GameImpl implements Game {
 
   addUnit(u: Unit) {
     this._unitsVersion++;
+    this.noteStructureChange(u);
     this.unitGrid.addUnit(u);
     this._unitMap.set(u.id(), u);
   }
   removeUnit(u: Unit) {
     this._unitsVersion++;
+    this.noteStructureChange(u);
     this.unitGrid.removeUnit(u);
     this._unitMap.delete(u.id());
     this.planDrivenUnitIds.delete(u.id());
@@ -1373,6 +1604,9 @@ export class GameImpl implements Game {
   setMagnitude(ref: TileRef, value: number): void {
     this._map.setMagnitude(ref, value);
   }
+  setTerrainByte(ref: TileRef, value: number): void {
+    this._map.setTerrainByte(ref, value);
+  }
   ownerID(ref: TileRef): number {
     return this._map.ownerID(ref);
   }
@@ -1430,10 +1664,17 @@ export class GameImpl implements Game {
   ): Set<TileRef> {
     return this._map.circleSearch(tile, radius, filter);
   }
+  bfsSearch(
+    tile: TileRef,
+    filter: (gm: GameMap, tile: TileRef) => boolean,
+    onVisit?: (tile: TileRef) => boolean | void,
+  ): boolean {
+    return this._map.bfsSearch(tile, filter, onVisit);
+  }
   bfs(
     tile: TileRef,
     filter: (gm: GameMap, tile: TileRef) => boolean,
-  ): Set<TileRef> {
+  ): ReadonlyTileSet {
     return this._map.bfs(tile, filter);
   }
   tileState(tile: TileRef): number {
@@ -1587,6 +1828,8 @@ export class GameImpl implements Game {
           : r.player(s.winner.player);
     this._unitsVersion = s.unitsVersion;
     this._territoryVersion = s.territoryVersion;
+    // Not snapshotted: it only keys memos, which must not outlive the restore.
+    this._structureVersion++;
     this.shipStaggers = { ...s.shipStaggers };
     this._nationMirvTargets = new Map(s.nationMirvTargets);
     this._mirvsLaunched = s.mirvsLaunched;

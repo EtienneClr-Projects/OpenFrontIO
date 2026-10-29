@@ -1,13 +1,14 @@
 import { GameMapType } from "@openfront/engine-api/game/GameTypes";
 import { UserMeResponse } from "@openfront/shared/ApiSchemas";
 import { PublicGameInfo, PublicGames } from "@openfront/shared/WireSchemas";
-import { html, nothing, TemplateResult } from "lit";
+import { html, nothing, type PropertyValues, TemplateResult } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
 import { getDesktopSessionState } from "../Auth";
 import {
   getDesktopUpdateState,
   isDesktopShell,
+  isSteamShell,
   type DesktopSessionState,
   type DesktopUpdateState,
 } from "../DesktopShell";
@@ -22,6 +23,7 @@ import { PublicLobbySocket } from "../LobbySocket";
 import { JoinLobbyEvent } from "../Main";
 import { lastUserMeResponse } from "../UserMeBroadcast";
 import { UsernameInput } from "../UsernameInput";
+import { UserSettings } from "../UserSettings";
 import {
   calculateServerTimeOffset,
   getGameModeLabel,
@@ -37,6 +39,7 @@ import {
   filterAndSortLobbies,
   flattenLobbies,
   hasFilterProfile,
+  loadDefaultFilterProfile,
   loadFilterProfiles,
   LOBBY_MODES,
   LOBBY_SOURCES,
@@ -45,6 +48,7 @@ import {
   LobbySourceFilter,
   NAMED_TEAM_CONFIGS,
   NUMERIC_TEAM_CONFIGS,
+  saveDefaultFilterProfile,
   saveFilterProfile,
 } from "./DetailedGameViewFilters";
 import {
@@ -66,7 +70,7 @@ const SCHEDULED_PANES = ["ffa", "team", "special"] as const;
  * the lobby counting down plus the queue behind it. Holding the slot count
  * fixed keeps the pane's height steady while a started lobby is replaced.
  */
-const PANE_SLOTS = 6;
+const PANE_SLOTS = 12;
 
 /** Tab key for the overview: every bucket at once, as three panes. */
 const ALL_TAB = "all";
@@ -118,6 +122,7 @@ export class DetailedGameViewModal extends BaseModal {
   @state() private showFilters = false;
   @state() private profiles: Record<string, LobbyFilters> = {};
   @state() private selectedProfile = "";
+  @state() private defaultProfile = "";
   @state() private profileName = "";
   @state() private desktopUpdateState: DesktopUpdateState | null = null;
   @state() private viewerTrusted: boolean = false;
@@ -161,8 +166,26 @@ export class DetailedGameViewModal extends BaseModal {
     };
   }
 
-  protected override onOpen(): void {
+  // The account whose default profile is currently applied. Profiles belong to
+  // the logged-in account, so a different account starts from its own default,
+  // while reopening the menu as the same account keeps the filters as they
+  // are. undefined until the first load.
+  private appliedForAccount: string | null | undefined = undefined;
+
+  private loadAccountProfiles(): void {
     this.profiles = loadFilterProfiles();
+    this.defaultProfile = loadDefaultFilterProfile(this.profiles);
+    const account = UserSettings.currentPlayerId();
+    if (this.appliedForAccount === account) return;
+    this.appliedForAccount = account;
+    this.filters = { ...DEFAULT_FILTERS };
+    this.selectedProfile = "";
+    this.profileName = "";
+    this.applyProfile(this.defaultProfile);
+  }
+
+  protected override onOpen(): void {
+    this.loadAccountProfiles();
     void this.lobbySocket.start();
     // Countdowns are derived from server timestamps, so a plain repaint keeps
     // them ticking between socket updates.
@@ -192,13 +215,12 @@ export class DetailedGameViewModal extends BaseModal {
     // went out.
     const last = lastUserMeResponse();
     if (last !== null) this.applyUserMe(last.response);
-    if (isDesktopShell()) {
-      // Seed BOTH from their current values -- this modal mounts well after
-      // the update bridge's synchronous replay has already been dispatched
-      // and lost, so without the seed its join() gate sees null (OPE-396).
-      this.desktopUpdateState = getDesktopUpdateState();
-      this.desktopSessionState = getDesktopSessionState();
-    }
+    // Seed BOTH from their current values -- this modal mounts well after
+    // the update bridge's synchronous replay has already been dispatched and
+    // lost, so without the seed its join() gate sees null (OPE-396). The
+    // session is the Steam sign-in, so only Steam seeds it.
+    if (isDesktopShell()) this.desktopUpdateState = getDesktopUpdateState();
+    if (isSteamShell()) this.desktopSessionState = getDesktopSessionState();
     document.addEventListener(
       "desktop-session-state",
       this.onDesktopSessionState,
@@ -230,6 +252,8 @@ export class DetailedGameViewModal extends BaseModal {
   private applyUserMe(me: UserMeResponse | false): void {
     this.viewerSignedIn = viewerIsSignedIn(me);
     this.viewerTrusted = viewerIsTrusted(me);
+    // The account may have changed (login, logout, switch).
+    this.loadAccountProfiles();
     // A portal sign-in surfaces as a userMeResponse without a linked
     // identity, so re-read the SDK profile alongside it.
     if (gamePortal.isOnGamePortal()) {
@@ -256,8 +280,8 @@ export class DetailedGameViewModal extends BaseModal {
     return Array.from(this.querySelectorAll<HTMLElement>("[data-lobby-slot]"));
   }
 
-  protected override willUpdate(): void {
-    super.willUpdate();
+  protected override willUpdate(changed: PropertyValues): void {
+    super.willUpdate(changed);
     this.slotTops = new Map(
       this.slotElements().map((el) => [
         el.dataset.lobbySlot ?? "",
@@ -719,6 +743,22 @@ export class DetailedGameViewModal extends BaseModal {
             ${translateText("detailed_view.delete_profile")}
           </button>
         </div>
+        <span class="${SECTION_LABEL} mt-3"
+          >${translateText("detailed_view.default_profile")}</span
+        >
+        ${styledSelect({
+          options: [
+            {
+              value: "",
+              label: translateText("detailed_view.no_default_profile"),
+            },
+            ...names.map((name) => ({ value: name, label: name })),
+          ],
+          value: this.defaultProfile,
+          onChange: (value) => this.setDefaultProfile(value),
+          ariaLabel: translateText("detailed_view.default_profile"),
+          className: "w-full sm:w-1/2",
+        })}
       </div>
     `;
   }
@@ -797,6 +837,12 @@ export class DetailedGameViewModal extends BaseModal {
     if (this.selectedProfile === "") return;
     this.profiles = deleteFilterProfile(this.selectedProfile);
     this.selectedProfile = "";
+    this.defaultProfile = loadDefaultFilterProfile(this.profiles);
+  }
+
+  private setDefaultProfile(name: string) {
+    saveDefaultFilterProfile(name);
+    this.defaultProfile = loadDefaultFilterProfile(this.profiles);
   }
 
   // Silent backstop, mirroring the homepage buttons: an invalid username can't

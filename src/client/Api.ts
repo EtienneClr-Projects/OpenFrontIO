@@ -1,4 +1,8 @@
-import type { NewsItem, StreamsFeed } from "@openfront/shared/ApiSchemas";
+import type {
+  NewsItem,
+  StorePlacement,
+  StreamsFeed,
+} from "@openfront/shared/ApiSchemas";
 import {
   ClaimAllRewardsResponse,
   ClaimAllRewardsResponseSchema,
@@ -7,6 +11,7 @@ import {
   ClaimRewardResponseSchema,
   GetMyTribeNamesResponse,
   GetMyTribeNamesResponseSchema,
+  GoogleFinalizeResponseSchema,
   IdentityTokenAudiencesResponseSchema,
   IdentityTokenResponse,
   IdentityTokenResponseSchema,
@@ -33,6 +38,11 @@ import {
   PutCreatorResponseSchema,
   PutUsernameResponse,
   PutUsernameResponseSchema,
+  FfaRankLeaderboardResponse,
+  FfaRankLeaderboardResponseSchema,
+  FfaAllRanksLeaderboardResponse,
+  FfaAllRanksLeaderboardResponseSchema,
+  FfaRankPositionResponseSchema,
   RankedLeaderboardResponse,
   RankedLeaderboardResponseSchema,
   SteamFinalizeResponseSchema,
@@ -1293,7 +1303,9 @@ export async function fetchTribeStats(
 }
 
 export type PurchaseWithCurrencyResult =
-  | { ok: true }
+  // `amount` is what was charged, when the response says so. It differs from
+  // the price the store showed when a sale started or ended in between.
+  | { ok: true; amount?: number }
   // 400 "Insufficient balance": the balance moved since the client's
   // pre-check. Nothing charged.
   | { ok: false; code: "insufficient_balance" }
@@ -1317,6 +1329,7 @@ export async function purchaseWithCurrency(
   cosmeticName: string,
   currencyType: "hard" | "soft",
   colorPaletteName?: string,
+  placement?: StorePlacement,
 ): Promise<PurchaseWithCurrencyResult> {
   try {
     const response = await fetch(`${getApiBase()}/shop/purchase`, {
@@ -1330,6 +1343,7 @@ export async function purchaseWithCurrency(
         cosmeticName,
         currencyType,
         colorPaletteName,
+        ...(placement ? { placement } : {}),
       }),
     });
     if (response.status === 401) {
@@ -1363,7 +1377,16 @@ export async function purchaseWithCurrency(
       );
       return { ok: false, code: "failed" };
     }
-    return { ok: true };
+    // The purchase went through: an unreadable body only loses the amount.
+    const body = await response.json().catch(() => null);
+    const amount = Number(body?.amount);
+    return {
+      ok: true,
+      amount:
+        typeof body?.amount === "string" && Number.isFinite(amount)
+          ? amount
+          : undefined,
+    };
   } catch (e) {
     console.error("purchaseWithCurrency: request failed", e);
     return { ok: false, code: "failed" };
@@ -1402,6 +1425,7 @@ const PACK_UNAVAILABLE_REASONS = [
 // Any error means no debit and no grants.
 export async function purchaseCosmeticPack(
   packName: string,
+  placement?: StorePlacement,
 ): Promise<PurchaseCosmeticPackResult> {
   try {
     const response = await fetch(`${getApiBase()}/shop/purchase/pack`, {
@@ -1410,7 +1434,7 @@ export async function purchaseCosmeticPack(
         "Content-Type": "application/json",
         Authorization: await getAuthHeader(),
       },
-      body: JSON.stringify({ packName }),
+      body: JSON.stringify({ packName, ...(placement ? { placement } : {}) }),
     });
     if (response.status === 401) {
       await logOut();
@@ -1558,40 +1582,6 @@ export async function claimAllRewards(): Promise<
   }
 }
 
-export async function createCustomCurrencyCheckout(
-  hardAmount: number,
-): Promise<string | false> {
-  try {
-    const response = await fetch(
-      `${getApiBase()}/stripe/create-custom-currency-checkout`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: await getAuthHeader(),
-        },
-        body: JSON.stringify({
-          hardAmount: hardAmount,
-          hostname: window.location.origin,
-        }),
-      },
-    );
-    if (!response.ok) {
-      console.error(
-        "createCustomCurrencyCheckout: request failed",
-        response.status,
-        response.statusText,
-      );
-      return false;
-    }
-    const json = await response.json();
-    return json.url;
-  } catch (e) {
-    console.error("createCustomCurrencyCheckout: request failed", e);
-    return false;
-  }
-}
-
 // What the caller wants to buy. `provider` is chosen explicitly by the client
 // (see paymentsProvider() in Payments.ts) — the server never infers the rail.
 // Exactly one identifier travels with each kind, and it is always a NAME: the
@@ -1607,7 +1597,11 @@ export type PaymentsCheckoutRequest = (
   | { kind: "currency_pack"; packName: string }
   | { kind: "custom_currency"; hardAmount: number }
   | { kind: "subscription_tier"; tierName: string }
-) & { provider: PaymentsProvider; handoffs?: PaymentsHandoff[] };
+) & {
+  provider: PaymentsProvider;
+  handoffs?: PaymentsHandoff[];
+  placement?: StorePlacement;
+};
 
 export type PaymentsCheckoutResult =
   | { ok: true; data: PaymentsCheckoutResponse }
@@ -1946,6 +1940,78 @@ export async function finalizeSteamOrder(
   }
 }
 
+export type FinalizeGooglePurchaseResult =
+  // "settled": credited. "pending": Play has not taken the money yet; the
+  // server credits it when the purchase completes.
+  | { ok: true; status: "settled" | "pending" }
+  // 409: the server will never credit this purchase. `reason` is the server's.
+  | { ok: false; code: "refused"; reason: string }
+  | { ok: false; code: "rate_limited" }
+  | { ok: false; code: "unauthorized" }
+  // The server could not decide (5xx, Google unreachable, network error, an
+  // unreadable answer). Nothing was lost: the purchase stays unconsumed and
+  // posting it again is the retry.
+  | { ok: false; code: "retry_later" }
+  // 400 / 403 and any other answer.
+  | { ok: false; code: "failed" };
+
+// POST /payments/google/finalize — credits a Google Play purchase. The server
+// consumes the purchase once it is credited, so posting the same token again
+// is always safe. Never log the token.
+export async function finalizeGooglePurchase(
+  purchaseToken: string,
+): Promise<FinalizeGooglePurchaseResult> {
+  try {
+    const response = await fetch(`${getApiBase()}/payments/google/finalize`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: await getAuthHeader(),
+      },
+      body: JSON.stringify({ purchaseToken }),
+    });
+    if (response.status === 401) {
+      await logOut();
+      return { ok: false, code: "unauthorized" };
+    }
+    if (response.status === 409) {
+      const body: unknown = await response.json().catch(() => null);
+      const reason =
+        typeof body === "object" &&
+        body !== null &&
+        "reason" in body &&
+        typeof body.reason === "string"
+          ? body.reason
+          : "unknown";
+      return { ok: false, code: "refused", reason };
+    }
+    if (response.status === 429) {
+      return { ok: false, code: "rate_limited" };
+    }
+    if (!response.ok) {
+      console.error("finalizeGooglePurchase: request failed", response.status);
+      return {
+        ok: false,
+        code: response.status >= 500 ? "retry_later" : "failed",
+      };
+    }
+    const parsed = GoogleFinalizeResponseSchema.safeParse(
+      await response.json(),
+    );
+    if (!parsed.success) {
+      console.error(
+        "finalizeGooglePurchase: Zod validation failed",
+        z.prettifyError(parsed.error),
+      );
+      return { ok: false, code: "retry_later" };
+    }
+    return { ok: true, status: parsed.data.status };
+  } catch (e) {
+    console.error("finalizeGooglePurchase: request failed", e);
+    return { ok: false, code: "retry_later" };
+  }
+}
+
 export async function cancelSubscription(): Promise<boolean> {
   try {
     const response = await fetch(`${getApiBase()}/subscriptions/@me/cancel`, {
@@ -2183,6 +2249,32 @@ export async function queueLobby(
   }
 }
 
+// POST /api/game/:id/boost on the game server — a player in a scheduled
+// public lobby pays plutonium to move it to the front of its queue. The
+// worker charges through the API with the player's token. On failure,
+// `status` is the HTTP status (402 = can't afford it, 409 = the lobby can no
+// longer be boosted).
+export async function boostLobby(
+  gameID: string,
+): Promise<{ ok: true } | { ok: false; status?: number }> {
+  try {
+    await ensureServerList();
+    const token = await getPlayToken();
+    const response = await fetch(
+      `${ClientEnv.gameHttpBase(gameID)}/${ClientEnv.gameWorkerPath(gameID)}/api/game/${gameID}/boost`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      },
+    );
+    if (response.ok) return { ok: true };
+    return { ok: false, status: response.status };
+  } catch (e) {
+    console.error("boostLobby: request failed", e);
+    return { ok: false };
+  }
+}
+
 // POST /api/create_game on the game server — mints a fresh private lobby with
 // the caller as creator. Deliberately has no worker prefix and no id: the edge
 // (nginx in prod, the vite dev proxy locally) picks a worker, which mints a
@@ -2380,6 +2472,103 @@ export async function fetchPlayerLeaderboard(
   } catch (err) {
     console.error("fetchPlayerLeaderboard: request failed", err);
     return false;
+  }
+}
+
+/** One FFA rank's board. `rank` is a tier family in lower case, e.g. "diamond". */
+export async function fetchFfaRankLeaderboard(
+  rank: string,
+  page: number,
+): Promise<FfaRankLeaderboardResponse | "reached_limit" | false> {
+  try {
+    const url = new URL(
+      `${getApiBase()}/leaderboard/ranked/ffa/${encodeURIComponent(rank)}`,
+    );
+    url.searchParams.set("page", String(page));
+    const res = await fetch(url.toString(), {
+      headers: { Accept: "application/json" },
+    });
+
+    if (!res.ok) {
+      if (res.status === 400) {
+        const body = await res.json().catch(() => null);
+        if (isPageBoundsMessage(body)) {
+          return "reached_limit";
+        }
+      }
+      console.warn(
+        "fetchFfaRankLeaderboard: unexpected status",
+        res.status,
+        res.statusText,
+      );
+      return false;
+    }
+
+    const parsed = FfaRankLeaderboardResponseSchema.safeParse(await res.json());
+    if (!parsed.success) {
+      console.warn(
+        "fetchFfaRankLeaderboard: Zod validation failed",
+        parsed.error.toString(),
+      );
+      return false;
+    }
+
+    return parsed.data;
+  } catch (err) {
+    console.error("fetchFfaRankLeaderboard: request failed", err);
+    return false;
+  }
+}
+
+/** One page of the globally ordered FFA Top 250 (five pages maximum). */
+export async function fetchFfaAllRanksLeaderboard(
+  page: number,
+): Promise<FfaAllRanksLeaderboardResponse | "reached_limit" | false> {
+  try {
+    const url = new URL(`${getApiBase()}/leaderboard/ranked/ffa/all`);
+    url.searchParams.set("page", String(page));
+    const res = await fetch(url.toString(), {
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) {
+      if (res.status === 400) {
+        const body = await res.json().catch(() => null);
+        if (isPageBoundsMessage(body)) return "reached_limit";
+      }
+      return false;
+    }
+    const parsed = FfaAllRanksLeaderboardResponseSchema.safeParse(
+      await res.json(),
+    );
+    return parsed.success ? parsed.data : false;
+  } catch (err) {
+    console.warn("fetchFfaAllRanksLeaderboard: request failed", err);
+    return false;
+  }
+}
+
+/** The signed-in player's rank position and global position; null if the request fails. */
+export async function fetchFfaRankPosition(): Promise<{
+  position: number | null;
+  globalPosition: number | null;
+} | null> {
+  try {
+    const res = await fetch(`${getApiBase()}/users/@me/ffa_rank_position`, {
+      headers: {
+        Accept: "application/json",
+        Authorization: await getAuthHeader(),
+      },
+    });
+    if (!res.ok) return null;
+    const parsed = FfaRankPositionResponseSchema.safeParse(await res.json());
+    if (!parsed.success) return null;
+    return {
+      position: parsed.data.position,
+      globalPosition: parsed.data.globalPosition ?? null,
+    };
+  } catch (err) {
+    console.warn("fetchFfaRankPosition: request failed", err);
+    return null;
   }
 }
 

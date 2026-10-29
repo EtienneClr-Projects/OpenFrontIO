@@ -1,4 +1,7 @@
-import type { UserMeResponse } from "@openfront/shared/ApiSchemas";
+import {
+  paidSubscriptionOf,
+  type UserMeResponse,
+} from "@openfront/shared/ApiSchemas";
 import { steamGrantOf } from "./SteamGrantNotices";
 
 export const STEAM_LICENCE_INTRO_NOTICE = "steam_licence_intro";
@@ -8,7 +11,7 @@ export const STEAM_PLUS_WELCOME_NOTICE = "steam_plus_welcome";
 // changed for them. Later buyers never knew the old model and get a welcome.
 export const STEAM_LICENCE_LAUNCH = Date.UTC(2026, 9, 13, 13);
 
-export function steamPlusConversionNotice(conversionId: string): string {
+function steamPlusConversionNotice(conversionId: string): string {
   return `steam_plus_conversion:${conversionId}`;
 }
 
@@ -69,7 +72,10 @@ export function steamNoticeDue(
     }
   }
   if (!desktopShell || !userMe.steamLicence) return null;
-  const grant = steamGrantOf(userMe);
+  // A payer's month is explained by the grant welcome instead, which says
+  // their paid subscription carries on beside it.
+  const grant =
+    paidSubscriptionOf(userMe.player) === null ? steamGrantOf(userMe) : null;
   const grantEnd =
     grant !== null && grant.periodEnd.getTime() > now ? grant.periodEnd : null;
   if (!ownedSinceLaunch(userMe.steamLicenceSince)) {

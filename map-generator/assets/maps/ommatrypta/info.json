@@ -1,10 +1,11 @@
 {
+  "$schema": "../../../info.schema.json",
   "id": "Ommatrypta",
   "name": "Ommatrypta",
   "translation_key": "map.ommatrypta",
-  "categories": ["arcade", "new"],
-  "multiplayer_frequency": 19,
-  "team_frequency": 13,
+  "categories": ["arcade"],
+  "author": "Patrick Plays Badly",
+  "description": "Eyes!! So many eyes!?!",
   "special_team_count": 13,
   "nations": [
     {

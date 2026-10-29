@@ -52,9 +52,46 @@ describe("<profile-card>", () => {
       card.querySelector("[data-xp-bar]")!.getAttribute("aria-valuenow"),
     ).toBe("62");
     expect(text("[data-profile-xp]")).toContain(
-      'progression.xp_progress:{"current":"1,490","next":"2,410"}',
+      `progression.xp_progress:{"current":"${(1490).toLocaleString()}","next":"${(2410).toLocaleString()}"}`,
     );
-    expect(text("[data-profile-lifetime]")).toContain("212,400");
+    expect(text("[data-profile-lifetime]")).toContain(
+      (212400).toLocaleString(),
+    );
+  });
+
+  it("shows the FFA rating on the full card", async () => {
+    const ffaRating = {
+      kind: "rated",
+      rating: 1612.6,
+      uncertainty: 84.7,
+      tier: "Gold I",
+    } as const;
+    await render({ progress: PRESTIGE_3, ffaRating });
+    const summary = card.querySelector("ffa-rating-summary");
+    expect(summary).not.toBeNull();
+    expect((summary as unknown as { rating: unknown }).rating).toEqual(
+      ffaRating,
+    );
+  });
+
+  it("shows no FFA rating without one", async () => {
+    await render({ progress: PRESTIGE_3 });
+    expect(card.querySelector("[data-ffa-rating-summary]")).toBeNull();
+    expect(card.textContent).not.toContain("ffa_rating.title");
+  });
+
+  it("keeps the compact card free of the rating", async () => {
+    await render({
+      variant: "compact",
+      progress: PRESTIGE_3,
+      ffaRating: {
+        kind: "rated",
+        rating: 1612.6,
+        uncertainty: 84.7,
+        tier: "Gold I",
+      },
+    });
+    expect(card.querySelector("ffa-rating-summary")).toBeNull();
   });
 
   it("never repeats the games and wins the stats below it show", async () => {

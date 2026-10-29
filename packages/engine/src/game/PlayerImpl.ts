@@ -199,6 +199,7 @@ export class PlayerImpl implements Player {
   private _spawnTile: TileRef | undefined;
   private _isDisconnected = false;
   private _disconnectSnapshot: DisconnectSnapshot | null = null;
+  private _playable = false;
 
   /**
    * Last PlayerUpdate emitted for this player on the worker→main channel.
@@ -416,6 +417,7 @@ export class PlayerImpl implements Player {
       betrayals: this._betrayalCount,
       lastDeleteUnitTick: this.lastDeleteUnitTick,
       isLobbyCreator: this.isLobbyCreator(),
+      playable: this._playable,
     };
   }
 
@@ -729,9 +731,20 @@ export class PlayerImpl implements Player {
   info(): PlayerInfo {
     return this.playerInfo;
   }
+  setPlayerInfo(info: PlayerInfo): void {
+    this.playerInfo = info;
+  }
 
   isLobbyCreator(): boolean {
     return this.playerInfo.isLobbyCreator;
+  }
+
+  playable(): boolean {
+    return this._playable;
+  }
+
+  setPlayable(playable: boolean): void {
+    this._playable = playable;
   }
 
   isAlive(): boolean {
@@ -1342,6 +1355,10 @@ export class PlayerImpl implements Player {
     return this._goldEarned;
   }
 
+  setGold(gold: Gold): void {
+    this._gold = gold;
+  }
+
   addGold(toAdd: Gold, tile?: TileRef): void {
     this._gold += toAdd;
     // Every gold grant flows through here (workers, trade, trains, piracy,
@@ -1510,6 +1527,7 @@ export class PlayerImpl implements Player {
   public buildableUnits(
     tile: TileRef | null,
     units: readonly PlayerBuildableUnitType[] = PlayerBuildable.types,
+    includeBuildPreview = false,
   ): BuildableUnit[] {
     const mg = this.mg;
     const config = mg.config();
@@ -1544,7 +1562,10 @@ export class PlayerImpl implements Player {
         canBuild = this.canSpawnUnitType(u, tile, validTiles);
       }
 
-      const buildNew = canBuild !== false && canUpgrade === false;
+      // A hold-to-build preview may need the new placement's rails even
+      // when upgrading is also possible at the cursor tile.
+      const buildNew =
+        canBuild !== false && (canUpgrade === false || includeBuildPreview);
 
       // Cumulative bulk-upgrade totals. Each upgrade raises the unit's level
       // and the constructed count, so step n costs the same as if the player
@@ -1682,22 +1703,9 @@ export class PlayerImpl implements Player {
   }
 
   portSpawn(tile: TileRef, validTiles: TileRef[] | null): TileRef | false {
-    const spawns = Array.from(
-      this.mg.bfs(
-        tile,
-        manhattanDistFN(tile, this.mg.config().radiusPortSpawn()),
-      ),
-    )
-      .filter((t) => this.mg.owner(t) === this && this.mg.isShore(t))
-      .sort(
-        (a, b) =>
-          this.mg.manhattanDist(a, tile) - this.mg.manhattanDist(b, tile),
-      );
-    const validTileSet = new Set(
-      validTiles ?? this.validStructureSpawnTiles(tile),
-    );
-    for (const t of spawns) {
-      if (validTileSet.has(t)) {
+    const tiles = validTiles ?? this.validStructureSpawnTiles(tile);
+    for (const t of tiles) {
+      if (this.mg.isShore(t)) {
         return t;
       }
     }
@@ -1752,11 +1760,10 @@ export class PlayerImpl implements Player {
       undefined,
       true,
     );
-    // Flood the player's own tiles inside the radius. Same traversal as
-    // GameMap.bfs (stack, N/S/W/E push order) so `nearbyTiles` comes out in
-    // the same order — the stable sort below keeps that order for ties and
-    // callers take the first entry — but on the shared visited array instead
-    // of a Set per call (nation placement calls this per candidate tile).
+    // Flood the player's own tiles inside the radius using its own scratch
+    // stack (N/S/W/E push order) on the shared visited array instead of a
+    // Set per call (nation placement calls this per candidate tile). The
+    // stable sort below keeps that order for ties and callers take the first entry.
     const map = this.mg.map();
     const w = map.width();
     const cx = tile % w;
@@ -1948,20 +1955,23 @@ export class PlayerImpl implements Player {
     if (this.mg.hasOwner(tile)) {
       return this.sharesBorderWith(owner);
     } else {
-      for (const t of this.mg.bfs(
+      let foundBorder = false;
+      this.mg.bfsSearch(
         tile,
         andFN(
           (gm, t) => !gm.hasOwner(t) && gm.isLand(t) && !gm.isImpassable(t),
           manhattanDistFN(tile, 200),
         ),
-      )) {
-        for (const n of this.mg.neighbors(t)) {
-          if (this.mg.owner(n) === this) {
-            return true;
+        (t) => {
+          for (const n of this.mg.neighbors(t)) {
+            if (this.mg.owner(n) === this) {
+              foundBorder = true;
+              return false;
+            }
           }
-        }
-      }
-      return false;
+        },
+      );
+      return foundBorder;
     }
   }
 
@@ -2025,6 +2035,7 @@ export class PlayerImpl implements Player {
       disconnectSnapshot: this._disconnectSnapshot
         ? { ...this._disconnectSnapshot }
         : null,
+      playable: this._playable,
       // Never assigned until the first PlayerExecution tick; keep that apart
       // from an explicit null.
       largestClusterBoundingBox: box
@@ -2102,6 +2113,7 @@ export class PlayerImpl implements Player {
     this._disconnectSnapshot = s.disconnectSnapshot
       ? { ...s.disconnectSnapshot }
       : null;
+    this._playable = s.playable;
     this.lastSentUpdate = undefined;
     const box = s.largestClusterBoundingBox;
     this.largestClusterBoundingBox = box
@@ -2117,7 +2129,11 @@ export class PlayerImpl implements Player {
 
 export const PlayerSnapshot = snapshotType({
   name: "Player",
-  version: 1,
+  version: 2,
+  migrations: {
+    // v1 had no scenario nations, so none was playable.
+    1: (d) => ({ ...d, playable: false }),
+  },
   schema: z.object({
     smallID: zInt(),
     info: PlayerInfoSchema,
@@ -2176,6 +2192,7 @@ export const PlayerSnapshot = snapshotType({
         wasAlive: z.boolean(),
       })
       .nullable(),
+    playable: z.boolean(),
     largestClusterBoundingBox: z
       .object({ minX: zInt(), minY: zInt(), maxX: zInt(), maxY: zInt() })
       .nullable()

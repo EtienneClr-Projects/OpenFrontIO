@@ -18,7 +18,6 @@ import { ClientEnv } from "./ClientEnv";
 import type { KeyboardLayoutMap } from "./KeyboardLayout";
 import type { LangSelector } from "./LangSelector";
 import { pagePin } from "./PagePin";
-import { Platform } from "./Platform";
 
 export const TUTORIAL_VIDEO_URL = "https://www.youtube.com/embed/7J5zwb_s_Cg";
 
@@ -271,8 +270,7 @@ export function getModifierLabels(
 export function renderDuration(totalSeconds: number): string {
   // Floor once so fractional inputs don't leak through to the seconds
   // component (e.g. `0.5` → `"0.5s"`).
-  const whole = Math.floor(totalSeconds);
-  if (whole <= 0) return `0${translateText("common.duration_second_short")}`;
+  const whole = Math.max(0, Math.floor(totalSeconds));
   const hours = Math.floor(whole / 3600);
   const minutes = Math.floor((whole % 3600) / 60);
   const seconds = whole % 60;
@@ -286,7 +284,10 @@ export function renderDuration(totalSeconds: number): string {
     parts.push(`${minutes}${translateText("common.duration_minute_short")}`);
   if (seconds > 0 || parts.length === 0)
     parts.push(`${seconds}${translateText("common.duration_second_short")}`);
-  return parts.join(" ");
+  if (!isRTL()) return parts.join(" ");
+  // Isolate the full duration from its surrounding text without splitting
+  // English fallback units into separate RTL runs.
+  return `\u2067${parts.join(" ")}\u2069`;
 }
 
 export async function copyToClipboard(
@@ -508,6 +509,12 @@ function getCachedLangSelector(): LangSelector | null {
   return found;
 }
 
+/** The locale selected in OpenFront's language picker, with a safe UI fallback. */
+export const getCurrentLanguage = (): string => {
+  const lang = getCachedLangSelector()?.currentLang ?? "en";
+  return lang === "debug" ? "en" : lang;
+};
+
 /** Language codes whose script reads right-to-left (resources/lang/metadata.json). */
 const RTL_LANGUAGES = new Set(["ar", "fa", "he"]);
 
@@ -598,6 +605,28 @@ export const translateText = (
  */
 export const hasOwnTranslation = (key: string): boolean =>
   getCachedLangSelector()?.translations?.[key] !== undefined;
+
+/**
+ * The raw message templates of every key under `prefix`, in the player's
+ * language over English, keyed without the prefix and not formatted. For a
+ * page that formats its own text from them: the clan map frame, which is
+ * served by the API and gets its strings over postMessage.
+ */
+export const translationTemplates = (
+  prefix: string,
+): Record<string, string> => {
+  const langSelector = getCachedLangSelector();
+  const out: Record<string, string> = {};
+  for (const source of [
+    langSelector?.defaultTranslations,
+    langSelector?.translations,
+  ]) {
+    for (const key in source ?? {}) {
+      if (key.startsWith(prefix)) out[key.slice(prefix.length)] = source![key];
+    }
+  }
+  return out;
+};
 
 export interface HasClanTag {
   clanTag?: string | null | (() => string | null);
@@ -726,14 +755,6 @@ export function getMessageTypeClasses(type: MessageType): string {
       console.warn(`Message type ${type} has no explicit color`);
       return severityColors["white"];
   }
-}
-
-export function getModifierKey(): string {
-  return Platform.isMac ? "⌘" : "Ctrl";
-}
-
-export function getAltKey(): string {
-  return Platform.isMac ? "⌥" : "Alt";
 }
 
 export function getGamesPlayed(): number {
@@ -1007,4 +1028,27 @@ export function homeHref(): string {
     return `https://${siteHost}/`;
   }
   return "/";
+}
+
+// Where leaving the game goes instead of the menu: the scenario editor's
+// hash while it test-plays a draft.
+let gameReturnHash: string | null = null;
+
+export function returnFromGameTo(hash: string | null): void {
+  gameReturnHash = hash;
+}
+
+/**
+ * Leaves a started game (or a join that took the page with it), to the menu
+ * or to the page that started it. Either way the page loads again: a game
+ * has no in-place teardown (MenuChrome.ts). A href that differs only in its
+ * hash wouldn't reload, so the return sets the URL and reloads.
+ */
+export function exitGame(): void {
+  if (gameReturnHash === null) {
+    window.location.href = homeHref();
+    return;
+  }
+  history.replaceState(null, "", window.location.pathname + gameReturnHash);
+  window.location.reload();
 }

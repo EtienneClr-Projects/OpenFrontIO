@@ -45,6 +45,9 @@ vi.mock("../../src/client/InGameModal", () => ({
 vi.mock("../../src/client/Utils", () => ({
   translateText: (key: string) => key,
   homeHref: () => "/",
+  exitGame: vi.fn(() => {
+    window.location.href = "/";
+  }),
 }));
 
 import type { LobbyConfig } from "../../src/client/ClientGameRunner";
@@ -58,6 +61,7 @@ import {
   SendHashEvent,
   SendSpawnIntentEvent,
   SendWinnerEvent,
+  SetIntentGateEvent,
   Transport,
 } from "../../src/client/Transport";
 import type { PlayerView } from "../../src/client/view";
@@ -324,6 +328,43 @@ describe("Transport send paths", () => {
         winner: ["player", "player01"],
         allPlayersStats: {},
       });
+    });
+  });
+
+  describe("the intent gate", () => {
+    function local() {
+      const made = makeTransport({
+        gameRecord: {} as LobbyConfig["gameRecord"],
+      });
+      transports.push(made.transport);
+      made.transport.connect(
+        () => {},
+        () => {},
+      );
+      return made.eventBus;
+    }
+    const sentIntents = () =>
+      localServer.onMessage.mock.calls.map(([msg]) => msg.intent?.type);
+
+    it("drops the intents it refuses and sends the rest", () => {
+      const eventBus = local();
+      eventBus.emit(
+        new SetIntentGateEvent((intent) => intent.type !== "attack"),
+      );
+      eventBus.emit(new SendAttackIntentEvent(null, 10));
+      eventBus.emit(new SendSpawnIntentEvent(5));
+
+      expect(sentIntents()).toEqual(["spawn"]);
+    });
+
+    it("sends everything again once removed", () => {
+      const eventBus = local();
+      eventBus.emit(new SetIntentGateEvent(() => false));
+      eventBus.emit(new SendAttackIntentEvent(null, 10));
+      eventBus.emit(new SetIntentGateEvent(null));
+      eventBus.emit(new SendAttackIntentEvent(null, 10));
+
+      expect(sentIntents()).toEqual(["attack"]);
     });
   });
 

@@ -1,5 +1,6 @@
 import { GameMapType } from "@openfront/engine-api/game/GameTypes";
 import {
+  type FfaRatingGameDelta,
   type PlayerGameModeFilter,
   type PlayerGameTypeFilter,
   type PublicPlayerGame,
@@ -24,6 +25,7 @@ import {
 } from "../../../Utils";
 import { renderLoadingSpinner } from "../../BaseModal";
 import "../../CopyButton";
+import { formatExpectedPct, formatRatingChange } from "../../ffaRating/FfaTier";
 import {
   formatAbsoluteTime,
   formatDayHeader,
@@ -159,13 +161,13 @@ export class PlayerGameHistoryView extends LitElement {
   private setTypeFilter(filter: TypeKey) {
     if (filter === this.typeFilter) return;
     this.typeFilter = filter;
-    this.reload();
+    void this.reload();
   }
 
   private setModeFilter(filter: ModeKey) {
     if (filter === this.modeFilter) return;
     this.modeFilter = filter;
-    this.reload();
+    void this.reload();
   }
 
   private async load({ append }: { append: boolean }) {
@@ -383,7 +385,7 @@ export class PlayerGameHistoryView extends LitElement {
           (group) => html`
             <div class="space-y-3">
               <div
-                class="sticky top-0 z-10 flex items-center gap-3 px-1 py-1.5"
+                class="sticky top-0 z-10 flex items-center gap-3 px-1 py-1.5 pointer-events-none"
               >
                 <span class="h-px flex-1 bg-white/10"></span>
                 <h3
@@ -591,6 +593,7 @@ export class PlayerGameHistoryView extends LitElement {
             translateText("clan_modal.history_duration"),
             renderDuration(game.durationSeconds),
           )}
+          ${game.ffaRating ? this.renderFfaRatingField(game.ffaRating) : ""}
         </div>
       </div>
     `;
@@ -605,6 +608,38 @@ export class PlayerGameHistoryView extends LitElement {
           ${label}
         </div>
         <div class="text-sm text-white truncate" title=${value}>${value}</div>
+      </div>
+    `;
+  }
+
+  // Only sent for a calibrated rated FFA seat, so the row's mode needs no check.
+  private renderFfaRatingField(r: FfaRatingGameDelta): TemplateResult {
+    const change = r.after - r.before;
+    const rounded = Math.round(change);
+    const colour =
+      rounded > 0
+        ? "text-green-400"
+        : rounded < 0
+          ? "text-red-400"
+          : "text-white/50";
+    return html`
+      <div class="min-w-0">
+        <div
+          class="text-[10px] font-bold uppercase tracking-wider text-white/40 mb-0.5"
+        >
+          ${translateText("ffa_rating.title")}
+        </div>
+        <span
+          data-ffa-rating-change
+          class="text-sm font-bold tabular-nums ${colour}"
+          title=${`${translateText("ffa_rating.result")} ${formatRatingChange(r.deltaResult)} · ${translateText("ffa_rating.placement")} ${formatRatingChange(r.deltaPlace)}`}
+          >${formatRatingChange(change)}</span
+        >
+        <span data-ffa-rating-expected class="block text-[10px] text-white/50"
+          >${translateText("ffa_rating.expected", {
+            pct: formatExpectedPct(r.expected),
+          })}</span
+        >
       </div>
     `;
   }

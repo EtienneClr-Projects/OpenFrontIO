@@ -8,6 +8,7 @@ import {
   GameRenderer,
 } from "../../../src/client/hud/GameRenderer";
 import type { EmojiTable } from "../../../src/client/hud/layers/EmojiTable";
+import type { SettingsModal } from "../../../src/client/hud/layers/SettingsModal";
 import type { WinModal } from "../../../src/client/hud/layers/WinModal";
 import { ShowEmojiMenuEvent } from "../../../src/client/InputHandler";
 import type { MapRenderer } from "../../../src/client/render/gl";
@@ -42,6 +43,7 @@ const HUD_TAGS = [
   "immunity-timer",
   "in-game-promo",
   "tutorial-panel",
+  "onboarding-overlay",
 ] as const;
 
 describe("createRenderer", () => {
@@ -86,10 +88,22 @@ describe("createRenderer", () => {
     const view = {} as MapRenderer;
     const inputEl = document.createElement("div");
 
-    const renderer = createRenderer(inputEl, game, eventBus, null, view);
+    const renderer = createRenderer(
+      inputEl,
+      game,
+      eventBus,
+      null,
+      view,
+      undefined,
+      12345,
+    );
 
     expect(renderer).toBeInstanceOf(GameRenderer);
     expect(renderer.transformHandler).toBeDefined();
+
+    // Settings modal wiring (fed by the shared bus, game view, and visibleAt).
+    const settingsModal = elements.get("settings-modal") as SettingsModal;
+    expect(settingsModal.visibleAt).toBe(12345);
 
     // Win modal wiring (fed by the shared bus and game view).
     const winModal = elements.get("win-modal") as WinModal;
@@ -101,5 +115,29 @@ describe("createRenderer", () => {
     expect(emojiTable.game).toBe(game);
     eventBus.emit(new ShowEmojiMenuEvent(1, 1));
     expect(emojiTable.isVisible).toBe(true);
+  });
+
+  it("cleans up the resize listener and canvas observer on dispose", () => {
+    const observer = { disconnect: vi.fn() };
+    const renderer = new GameRenderer(
+      {
+        updateCanvasBoundingRect: vi.fn(),
+        centerAll: vi.fn(),
+        observeCanvasSize: () => observer,
+      } as any,
+      {} as any,
+      [],
+      {} as any,
+    );
+    const addSpy = vi.spyOn(window, "addEventListener");
+    const removeSpy = vi.spyOn(window, "removeEventListener");
+    renderer.initialize();
+    const resizeListener = addSpy.mock.calls.find(
+      ([type]) => type === "resize",
+    )?.[1];
+    expect(resizeListener).toEqual(expect.any(Function));
+    renderer.dispose();
+    expect(removeSpy).toHaveBeenCalledWith("resize", resizeListener);
+    expect(observer.disconnect).toHaveBeenCalled();
   });
 });

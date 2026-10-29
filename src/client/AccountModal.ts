@@ -12,7 +12,12 @@ import {
   hasLinkedIdentity,
   responseHasLinkedIdentity,
 } from "./AccountIdentity";
-import { fetchPlayerById, getUserMe, invalidateUserMe } from "./Api";
+import {
+  fetchFfaRankPosition,
+  fetchPlayerById,
+  getUserMe,
+  invalidateUserMe,
+} from "./Api";
 import {
   discordLogin,
   googleLogin,
@@ -35,6 +40,7 @@ import "./components/CreatorCodePanel";
 import type { CreatorChangedDetail } from "./components/CreatorCodePanel";
 import "./components/CurrencyDisplay";
 import "./components/Difficulties";
+import { ffaSummaryFromMe } from "./components/ffaRating/FfaRatingSummary";
 import "./components/FriendsList";
 import type { PrestigeFlow } from "./components/PrestigeFlow";
 import "./components/ProfileCard";
@@ -44,7 +50,7 @@ import type { RewardsChangedDetail } from "./components/RewardsPanel";
 import { googleLinkButton } from "./components/ui/GoogleLinkButton";
 import { modalHeader } from "./components/ui/ModalHeader";
 import { steamGlyph, steamLinkButton } from "./components/ui/SteamLinkButton";
-import { desktopLinkGate, isDesktopShell } from "./DesktopShell";
+import { desktopLinkGate, isSteamShell } from "./DesktopShell";
 import { gamePortal, type PortalUser } from "./GamePortal";
 import "./GameStatsModal";
 import { showInGameAlert } from "./InGameModal";
@@ -125,6 +131,8 @@ export class AccountModal extends BaseModal {
   // from the `creatorCode=` router arg (a `/c/CODE` share-link visit).
   // Reassigned on every open, same as loginError above.
   @state() private prefillCreatorCode: string | undefined;
+  // Global FFA position, read from the rank-position call (not /users/@me).
+  @state() private ffaGlobalPosition: number | null = null;
 
   private userMeResponse: UserMeResponse | null = null;
   private statsTree: PlayerStatsTree | null = null;
@@ -420,12 +428,16 @@ export class AccountModal extends BaseModal {
               ${translateText("account_modal.connected_as")}
             </div>
             <div class="flex flex-col items-center gap-3">
-              <img
-                src=${user.profilePictureUrl}
-                alt=${user.username}
-                class="w-16 h-16 rounded-full object-cover"
-                referrerpolicy="no-referrer"
-              />
+              ${
+                user.profilePictureUrl !== null
+                  ? html`<img
+                      src=${user.profilePictureUrl}
+                      alt=${user.username}
+                      class="w-16 h-16 rounded-full object-cover"
+                      referrerpolicy="no-referrer"
+                    />`
+                  : nothing
+              }
               <div class="text-white text-lg font-medium">${user.username}</div>
               ${this.renderCurrency()}
             </div>
@@ -451,7 +463,11 @@ export class AccountModal extends BaseModal {
             variant="primary"
             width="block"
             size="md"
-            translationKey="main.sign_in"
+            translationKey=${
+              gamePortal.name() === "viverse"
+                ? "account_modal.sign_in_viverse"
+                : "main.sign_in"
+            }
             @click=${this.handlePortalSignIn}
           ></o-button>
         </div>
@@ -652,6 +668,20 @@ export class AccountModal extends BaseModal {
     variant: "full" | "compact",
   ): TemplateResult | typeof nothing {
     const player = this.userMeResponse?.player;
+    const meRating = ffaSummaryFromMe(player?.leaderboard?.ffa);
+    const ffaRating =
+      meRating?.kind === "rated"
+        ? { ...meRating, globalPosition: this.ffaGlobalPosition }
+        : meRating;
+    // No level to show (progression off): the full tab still shows the rating.
+    if (player?.publicId && !player.progress) {
+      return variant === "full" && ffaRating !== null
+        ? html`<ffa-rating-summary
+            class="mb-4 block"
+            .rating=${ffaRating}
+          ></ffa-rating-summary>`
+        : nothing;
+    }
     if (!player?.publicId || !player.progress) return nothing;
     // With any XP still waiting to be scored, provisionally: it never offers
     // Prestige (only the confirmed level can).
@@ -663,6 +693,7 @@ export class AccountModal extends BaseModal {
       .clanTag=${this.displayClanTag}
       .progress=${view.progress}
       .provisional=${view.provisional}
+      .ffaRating=${ffaRating}
       .openKey=${`account-${this.openCount}`}
       prestigeable
       @prestige-request=${this.handlePrestigeRequest}
@@ -842,7 +873,7 @@ export class AccountModal extends BaseModal {
       this.handleLinkGoogle,
       // The shell sends the player to the website for this (see linkGoogle
       // in Auth.ts); the caption has to say so.
-      isDesktopShell()
+      isSteamShell()
         ? "account_modal.link_google_on_web"
         : "account_modal.link_google",
     );
@@ -860,7 +891,7 @@ export class AccountModal extends BaseModal {
   // Not shown inside the desktop shell: a shell player already holds this
   // identity through the native Steam ticket.
   private renderSteamLink(): TemplateResult {
-    if (isDesktopShell()) return html``;
+    if (isSteamShell()) return html``;
     const steam = this.userMeResponse?.user?.steam;
     if (steam) {
       // The attached account is NAMED, not merely reported as linked: a wrong
@@ -992,14 +1023,15 @@ export class AccountModal extends BaseModal {
   }
 
   private renderLoginOptions() {
-    // On the desktop shell both provider buttons open the shell's browser
+    // In the Steam shell both provider buttons open the shell's browser
     // link flow rather than an in-place OAuth redirect (see discordLogin /
     // googleLogin in Auth.ts), and the captions say so. Keyed on the shell
     // itself, not on the link-flow bridge: Auth.ts never builds the redirect
-    // on ANY desktop shell (a shell too old to expose showLinkGate gets an
+    // on ANY Steam shell (a shell too old to expose showLinkGate gets an
     // update prompt instead), so the web caption would be wrong on every one
-    // of them.
-    const viaBrowser = isDesktopShell();
+    // of them. The Android shell keeps the web captions: Google signs in
+    // there in place, through the shell's native sheet.
+    const viaBrowser = isSteamShell();
     return html`
       <div class="flex items-center justify-center p-6 min-h-full">
         <div
@@ -1176,7 +1208,7 @@ export class AccountModal extends BaseModal {
   }
 
   private handleGoogleLogin() {
-    googleLogin();
+    void googleLogin();
   }
 
   private handleSteamLogin() {
@@ -1241,7 +1273,8 @@ export class AccountModal extends BaseModal {
           this.userMeResponse = userMe;
           this.prefetchPrestigeFlow();
           if (this.userMeResponse?.player?.publicId) {
-            this.loadPlayerProfile(this.userMeResponse.player.publicId);
+            void this.loadPlayerProfile(this.userMeResponse.player.publicId);
+            void this.loadFfaGlobalPosition(this.userMeResponse);
           }
         }
         this.finishLoadingUser(opening);
@@ -1251,6 +1284,20 @@ export class AccountModal extends BaseModal {
         this.finishLoadingUser(opening);
       });
     this.requestUpdate();
+  }
+
+  // Global position only comes from the rank-position endpoint, and only a
+  // rated player has one.
+  private async loadFfaGlobalPosition(userMe: UserMeResponse): Promise<void> {
+    this.ffaGlobalPosition = null;
+    if (ffaSummaryFromMe(userMe.player.leaderboard?.ffa)?.kind !== "rated") {
+      return;
+    }
+    const result = await fetchFfaRankPosition();
+    if (this.userMeResponse?.player?.publicId !== userMe.player.publicId) {
+      return;
+    }
+    this.ffaGlobalPosition = result?.globalPosition ?? null;
   }
 
   protected onClose(): void {

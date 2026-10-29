@@ -1,4 +1,4 @@
-﻿import { Structures } from "@openfront/engine-api/game/GameTypes";
+import { Structures } from "@openfront/engine-api/game/GameTypes";
 import { PseudoRandom } from "@openfront/engine-lib/PseudoRandom";
 import {
   VersionedSchema,
@@ -41,6 +41,10 @@ export class TribeExecution implements Execution {
     this.expandRatio = this.random.nextInt(10, 20) / 100;
   }
 
+  playerID(): string {
+    return this.tribe.id();
+  }
+
   activeDuringSpawnPhase(): boolean {
     return false;
   }
@@ -70,6 +74,13 @@ export class TribeExecution implements Execution {
 
       // Send an attack on the first tick
       this.attackBehavior.sendAttack(this.mg.terraNullius());
+      return;
+    }
+
+    // The tutorial's tribe only grows into free land, and accepts no
+    // alliance: the tutorial has the new player conquer it.
+    if (this.mg.config().gameConfig().tutorial) {
+      this.attackBehavior.expandIntoFreeLand();
       return;
     }
 

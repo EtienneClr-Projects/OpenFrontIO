@@ -6,7 +6,6 @@ import {
   TerraNullius,
   Tick,
   TrainType,
-  TrajectoryTile,
   TransportShipState,
   UnitType,
   WarshipState,
@@ -18,7 +17,6 @@ import {
 import { maxHealthWithVeterancy } from "@openfront/engine-lib/game/Veterancy";
 import {
   snapshotType,
-  zBytes,
   zInt,
   zNum,
   zPlayerRef,
@@ -177,7 +175,12 @@ export class UnitImpl implements Unit {
           ? this.transportShipState()
           : undefined,
       nukeState:
-        this._nukeState !== undefined ? { ...this._nukeState } : undefined,
+        this._nukeState !== undefined
+          ? {
+              targetedBySam: this._nukeState.targetedBySam,
+              waitTicks: this._nukeState.waitTicks,
+            }
+          : undefined,
       samUpgrade:
         this._samLauncherState?.upgradeStartTick !== undefined
           ? { ...this._samLauncherState }
@@ -542,6 +545,9 @@ export class UnitImpl implements Unit {
   setUnderConstruction(underConstruction: boolean): void {
     if (this._underConstruction !== underConstruction) {
       this._underConstruction = underConstruction;
+      // nearbyUnits skips structures under construction, so this flip changes
+      // what a rail plan sees.
+      this.mg.noteStructureChange(this);
       this._owner._myUnitsVersion++; // unitsOwned() weighs under-construction units differently
       this.mg.addUpdate(this.toUpdate());
     }
@@ -605,7 +611,7 @@ export class UnitImpl implements Unit {
     return this._nukeState?.trajectoryIndex ?? 0;
   }
 
-  trajectory(): TrajectoryTile[] {
+  trajectory(): TileRef[] {
     return this._nukeState?.trajectory ?? [];
   }
 
@@ -756,6 +762,19 @@ export class UnitImpl implements Unit {
     this.mg.addUpdate(this.toUpdate());
   }
 
+  placeAtLevel(level: number): void {
+    this._level = level;
+    this._missileTimerQueue = [];
+    if (this._type === UnitType.SAMLauncher) {
+      // No upgrade in progress: dynamicSamRange gives samRange(level).
+      this._samLauncherState = undefined;
+    }
+    // unitCount()/unitsOwned() are level-weighted and memoised on these versions
+    this.mg.bumpUnitsVersion();
+    this._owner._myUnitsVersion++;
+    this.mg.addUpdate(this.toUpdate());
+  }
+
   decreaseLevel(destroyer?: Player): void {
     this._level--;
     if ([UnitType.MissileSilo, UnitType.SAMLauncher].includes(this.type())) {
@@ -825,11 +844,8 @@ export class UnitImpl implements Unit {
         : null,
       nukeState: nuke
         ? {
-            trajectoryTiles: Uint32Array.from(nuke.trajectory, (t) => t.tile),
-            trajectoryTargetable: Uint8Array.from(nuke.trajectory, (t) =>
-              t.targetable ? 1 : 0,
-            ),
-            trajectoryIndex: nuke.trajectoryIndex,
+            trajectoryTiles: Uint32Array.from(nuke.trajectory ?? []),
+            trajectoryIndex: nuke.trajectoryIndex ?? 0,
             targetedBySam: nuke.targetedBySam,
             waitTicks: nuke.waitTicks,
           }
@@ -880,10 +896,7 @@ export class UnitImpl implements Unit {
     const nuke = s.nukeState;
     this._nukeState = nuke
       ? {
-          trajectory: Array.from(nuke.trajectoryTiles, (tile, i) => ({
-            tile,
-            targetable: nuke.trajectoryTargetable[i] === 1,
-          })),
+          trajectory: Array.from(nuke.trajectoryTiles),
           trajectoryIndex: nuke.trajectoryIndex,
           targetedBySam: nuke.targetedBySam,
           waitTicks: nuke.waitTicks,
@@ -940,7 +953,6 @@ export const UnitSnapshot = snapshotType({
     nukeState: z
       .object({
         trajectoryTiles: zTiles(),
-        trajectoryTargetable: zBytes(),
         trajectoryIndex: zInt(),
         targetedBySam: z.boolean(),
         waitTicks: zInt(),

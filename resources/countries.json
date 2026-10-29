@@ -1128,6 +1128,11 @@
     "name": "Dominican Republic"
   },
   {
+    "code": "Drenthe",
+    "continent": "Europe",
+    "name": "Drenthe"
+  },
+  {
     "code": "Duchy of Courland and Semigallia",
     "continent": "Europe",
     "name": "Duchy of Courland and Semigallia"
@@ -1364,6 +1369,11 @@
     "name": "Flanders"
   },
   {
+    "code": "Flevoland",
+    "continent": "Europe",
+    "name": "Flevoland"
+  },
+  {
     "code": "Florida",
     "continent": "North America",
     "name": "Florida"
@@ -1427,6 +1437,11 @@
     "name": "French Southern Territories"
   },
   {
+    "code": "Friesland",
+    "continent": "Europe",
+    "name": "Friesland"
+  },
+  {
     "code": "ga",
     "continent": "Africa",
     "name": "Gabon"
@@ -1475,6 +1490,11 @@
     "code": "Gazankulu",
     "continent": "Africa",
     "name": "Gazankulu"
+  },
+  {
+    "code": "Gelderland",
+    "continent": "Europe",
+    "name": "Gelderland"
   },
   {
     "code": "ge",
@@ -1563,6 +1583,11 @@
     "name": "Grande Comore"
   },
   {
+    "code": "Greater London",
+    "continent": "Europe",
+    "name": "Greater London"
+  },
+  {
     "code": "gr",
     "continent": "Europe",
     "name": "Greece"
@@ -1576,6 +1601,11 @@
     "code": "gd",
     "continent": "North America",
     "name": "Grenada"
+  },
+  {
+    "code": "Groningen",
+    "continent": "Europe",
+    "name": "Groningen"
   },
   {
     "code": "gp",
@@ -1880,6 +1910,11 @@
     "code": "Kansas",
     "continent": "North America",
     "name": "Kansas"
+  },
+  {
+    "code": "Karelians",
+    "continent": "Europe",
+    "name": "Karelians"
   },
   {
     "code": "Karelo-Finnish SSR",
@@ -2259,6 +2294,11 @@
     "name": "Lihyan"
   },
   {
+    "code": "Limburg",
+    "continent": "Europe",
+    "name": "Limburg"
+  },
+  {
     "code": "Lincoln",
     "continent": "North America",
     "name": "Lincoln"
@@ -2281,6 +2321,11 @@
     "code": "Lithuanian SSR",
     "continent": "Europe",
     "name": "Lithuanian SSR"
+  },
+  {
+    "code": "gb-lnd",
+    "continent": "Europe",
+    "name": "London"
   },
   {
     "code": "Los Altos",
@@ -2361,6 +2406,11 @@
     "code": "mg",
     "continent": "Africa",
     "name": "Madagascar"
+  },
+  {
+    "code": "pt-ma",
+    "continent": "Africa",
+    "name": "Madeira"
   },
   {
     "code": "Mahra Sultanate",
@@ -2895,6 +2945,16 @@
     "name": "Noarootsi"
   },
   {
+    "code": "North_Brabant",
+    "continent": "Europe",
+    "name": "Noord-Brabant"
+  },
+  {
+    "code": "North_Holland",
+    "continent": "Europe",
+    "name": "Noord-Holland"
+  },
+  {
     "code": "nf",
     "continent": "Oceania",
     "name": "Norfolk Island"
@@ -2985,6 +3045,11 @@
     "name": "Nova Scotia"
   },
   {
+    "code": "Novgorod Republic",
+    "continent": "Europe",
+    "name": "Novgorod Republic"
+  },
+  {
     "code": "Nunatsiavut",
     "continent": "North America",
     "name": "Nunatsiavut"
@@ -3073,6 +3138,11 @@
     "code": "Ottoman Empire",
     "continent": "Asia",
     "name": "Ottoman Empire"
+  },
+  {
+    "code": "Overijssel",
+    "continent": "Europe",
+    "name": "Overijssel"
   },
   {
     "code": "Pahang",
@@ -4539,6 +4609,11 @@
     "name": "Trucial States"
   },
   {
+    "code": "Tsardom of Russia",
+    "continent": "Europe",
+    "name": "Tsardom of Russia"
+  },
+  {
     "code": "Tucuman",
     "continent": "South America",
     "name": "Tucuman"
@@ -4686,6 +4761,11 @@
     "code": "Utah",
     "continent": "North America",
     "name": "Utah"
+  },
+  {
+    "code": "Utrecht",
+    "continent": "Europe",
+    "name": "Utrecht"
   },
   {
     "code": "Uzbek SSR",
@@ -4936,6 +5016,11 @@
     "name": "Zayyanid Sultanate"
   },
   {
+    "code": "Zeeland",
+    "continent": "Europe",
+    "name": "Zeeland"
+  },
+  {
     "code": "Zheleznogorsk",
     "continent": "Asia",
     "name": "Zheleznogorsk"
@@ -4944,6 +5029,11 @@
     "code": "zw",
     "continent": "Africa",
     "name": "Zimbabwe"
+  },
+  {
+    "code": "South_Holland",
+    "continent": "Europe",
+    "name": "Zuid-Holland"
   },
   {
     "code": "Zulu",

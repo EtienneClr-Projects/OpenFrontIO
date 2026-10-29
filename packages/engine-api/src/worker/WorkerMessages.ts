@@ -1,6 +1,8 @@
+import { EditorCommand } from "../EditorCommands";
 import { TileRef } from "../game/GameMap";
 import {
   BuildableUnit,
+  Difficulty,
   HumanDisconnects,
   HumanStatsSnapshot,
   PlayerActions,
@@ -42,10 +44,15 @@ export type WorkerMessageType =
   | "snapshot_result"
   | "read_snapshot_header"
   | "read_snapshot_header_result"
+  | "extract_snapshot"
+  | "extract_snapshot_result"
+  | "extract_snapshot_error"
   | "human_stats"
   | "human_stats_result"
   | "human_disconnects"
-  | "human_disconnects_result";
+  | "human_disconnects_result"
+  | "editor_command"
+  | "editor_command_result";
 
 // Base interface for all messages
 interface BaseWorkerMessage {
@@ -62,6 +69,12 @@ export interface InitMessage extends BaseWorkerMessage {
   map: MapFiles;
   /** Resume from this game snapshot instead of starting a new game. */
   snapshot?: Uint8Array;
+  /**
+   * The scenario editor's engine: takes editor_command messages, which any
+   * other worker rejects, and starts with no executions, since it never
+   * ticks (docs/ScenarioEditor.md).
+   */
+  editor?: boolean;
 }
 
 /**
@@ -149,6 +162,8 @@ export interface PlayerBuildablesMessage extends BaseWorkerMessage {
   x?: number;
   y?: number;
   units?: readonly PlayerBuildableUnitType[];
+  // Include placement rails even when an upgrade target is also available.
+  includeBuildPreview?: boolean;
 }
 
 export interface PlayerBuildablesResultMessage extends BaseWorkerMessage {
@@ -231,6 +246,30 @@ export interface HumanStatsResultMessage extends BaseWorkerMessage {
   result: HumanStatsSnapshot;
 }
 
+export interface ExtractSnapshotMessage extends BaseWorkerMessage {
+  type: "extract_snapshot";
+  gameStartInfo: GameStartInfo;
+  turns: Turn[];
+  map: MapFiles;
+  targetTick: number;
+  chosenPlayerID: PlayerID;
+  localClientID: ClientID;
+  difficulty?: Difficulty;
+  newGameID?: string;
+}
+
+export interface ExtractSnapshotResultMessage extends BaseWorkerMessage {
+  type: "extract_snapshot_result";
+  snapshot: Uint8Array;
+  gameStartInfo: GameStartInfo;
+  tick: number;
+}
+
+export interface ExtractSnapshotErrorMessage extends BaseWorkerMessage {
+  type: "extract_snapshot_error";
+  error: string;
+}
+
 export interface HumanDisconnectsMessage extends BaseWorkerMessage {
   type: "human_disconnects";
 }
@@ -238,6 +277,25 @@ export interface HumanDisconnectsMessage extends BaseWorkerMessage {
 export interface HumanDisconnectsResultMessage extends BaseWorkerMessage {
   type: "human_disconnects_result";
   result: HumanDisconnects;
+}
+
+/**
+ * Applies one editor command. The updates it made arrive as a
+ * game_update_batch for the current tick, then an EditorCommandResultMessage.
+ */
+export interface EditorCommandMessage extends BaseWorkerMessage {
+  type: "editor_command";
+  command: EditorCommand;
+}
+
+/**
+ * `error` says why the command was rejected; a rejected one changed nothing.
+ * `map` is the map files an `export_terrain` wrote.
+ */
+export interface EditorCommandResultMessage extends BaseWorkerMessage {
+  type: "editor_command_result";
+  error?: string;
+  map?: MapFiles;
 }
 
 // Union types for type safety
@@ -254,8 +312,10 @@ export type MainThreadMessage =
   | TransportShipSpawnMessage
   | SnapshotMessage
   | ReadSnapshotHeaderMessage
+  | ExtractSnapshotMessage
   | HumanStatsMessage
-  | HumanDisconnectsMessage;
+  | HumanDisconnectsMessage
+  | EditorCommandMessage;
 
 // Message send from worker
 export type WorkerMessage =
@@ -274,5 +334,8 @@ export type WorkerMessage =
   | TransportShipSpawnResultMessage
   | SnapshotResultMessage
   | ReadSnapshotHeaderResultMessage
+  | ExtractSnapshotResultMessage
+  | ExtractSnapshotErrorMessage
   | HumanStatsResultMessage
-  | HumanDisconnectsResultMessage;
+  | HumanDisconnectsResultMessage
+  | EditorCommandResultMessage;

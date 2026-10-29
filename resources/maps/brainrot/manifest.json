@@ -1,10 +1,10 @@
 {
-  "categories": ["arcade", "new"],
+  "categories": ["arcade"],
   "id": "BrainRot",
   "layers": [
     {
       "alpha": 0.7,
-      "id": "brland",
+      "id": "brainland",
       "nukeable": true,
       "placement": "land"
     }
@@ -24,7 +24,6 @@
     "num_land_tiles": 357985,
     "width": 1498
   },
-  "multiplayer_frequency": 19,
   "name": "Brain Rot",
   "nations": [
     {
@@ -200,8 +199,6 @@
       "name": "Brain Stem"
     }
   ],
-  "special_team_count": 27,
-  "team_frequency": 13,
   "themes": ["space", "war"],
   "translation_key": "map.brainrot"
 }

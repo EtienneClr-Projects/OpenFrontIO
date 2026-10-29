@@ -89,12 +89,35 @@ export const ColorPaletteSchema = z.object({
   secondaryColor: z.string(),
 });
 
+// A store sale. While one covers an item, the item's priceHard/priceSoft are
+// already the sale price (what the purchase endpoints charge); listPriceHard/
+// listPriceSoft carry the price before it, and `promotion` names the sale.
+export const PromotionSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  percentOff: z.number(),
+  // For a flash sale, when the current item's discount ends and the next
+  // item's starts.
+  endsAt: z.string(),
+  // A flash sale discounts one item at a time, the same for every player,
+  // a new one every slot. Absent on a store-wide or scoped sale.
+  kind: z.literal("flash").optional(),
+});
+export type Promotion = z.infer<typeof PromotionSchema>;
+
 const CosmeticSchema = z.object({
   name: CosmeticNameSchema,
   affiliateCode: z.string().nullable().optional(),
   product: ProductSchema.nullable(),
   priceSoft: z.number().optional(),
   priceHard: z.number().optional(),
+  listPriceSoft: z.number().optional(),
+  listPriceHard: z.number().optional(),
+  promotion: PromotionSchema.optional(),
+  // Present only while the item is new to the store (added in the last 14
+  // days): when it stops being new. Compare with the clock (isNew), since
+  // the catalog is cached.
+  newUntil: z.string().optional(),
   artist: z.string().optional(),
   // Whether the artist declared they used generative AI making this. Present only when they
   // actually answered: the catalogue omits the field for everything nobody was asked about, so
@@ -460,6 +483,9 @@ export const PackSchema = CosmeticSchema.extend({
   currency: z.enum(["hard", "soft"]),
   amount: z.number().int().positive(),
   bonusAmount: z.number().int().nonnegative(),
+  // The Google Play product this pack is sold as in the Android app. Only
+  // hard-currency packs sold on Play carry one; the app lists no other pack.
+  googleProductId: z.string().optional(),
 });
 
 // One member of a cosmetic pack: a reference to a cosmetic elsewhere in the
@@ -486,6 +512,11 @@ export const CosmeticPackSchema = z.object({
   displayName: z.string(),
   description: z.string(),
   priceHard: z.number(),
+  // Present only while a sale covers the pack; priceHard is then the sale price.
+  listPriceHard: z.number().optional(),
+  promotion: PromotionSchema.optional(),
+  // As on a cosmetic: present only while the pack is new.
+  newUntil: z.string().optional(),
   rarity: z
     .enum(["common", "uncommon", "rare", "epic", "legendary"])
     .or(z.string()),
@@ -556,6 +587,12 @@ export const CosmeticsSchema = z.object({
   // Price to put a listed lobby in the public queue (host modal's Queue
   // button). Optional like tribeNames; the button hides when absent.
   lobbyQueue: z.object({ priceHard: z.number() }).optional(),
+  // Price to boost a scheduled public lobby to the front of its queue (join
+  // modal's Boost button). The button hides when absent.
+  mapBoost: z.object({ priceHard: z.number() }).optional(),
+  // Every sale running when the catalog was served, for the store banner.
+  // Optional: an older cosmetics.json has none.
+  promotions: PromotionSchema.array().optional(),
 });
 
 /**

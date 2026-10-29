@@ -1,4 +1,5 @@
 import { Cell, TerrainType } from "./GameTypes";
+import { ReadonlyTileSet } from "./ReadViews";
 
 export type TileRef = number;
 
@@ -29,6 +30,8 @@ export interface GameMap {
   clearShorelineBit(ref: TileRef): void;
   setOcean(ref: TileRef): void;
   setMagnitude(ref: TileRef, value: number): void;
+  /** Writes the whole terrain byte (the scenario editor's terrain edits). */
+  setTerrainByte(ref: TileRef, value: number): void;
   // State getters and setters (mutable)
   ownerID(ref: TileRef): number;
   hasOwner(ref: TileRef): boolean;
@@ -67,10 +70,15 @@ export interface GameMap {
     radius: number,
     filter?: (tile: TileRef, d2: number) => boolean,
   ): Set<TileRef>;
+  bfsSearch(
+    tile: TileRef,
+    filter: (gm: GameMap, tile: TileRef) => boolean,
+    onVisit?: (tile: TileRef) => boolean | void,
+  ): boolean;
   bfs(
     tile: TileRef,
     filter: (gm: GameMap, tile: TileRef) => boolean,
-  ): Set<TileRef>;
+  ): ReadonlyTileSet;
 
   /**
    * Returns the packed per-tile state as an unsigned 16-bit value (`0..65535`).

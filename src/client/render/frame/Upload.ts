@@ -29,6 +29,7 @@ export interface FrameUploadTarget {
     trailState: Uint16Array,
     dirtyRowMin: number,
     dirtyRowMax: number,
+    changedTiles?: readonly number[],
   ): void;
   updateSpiralRibbons(ribbons: readonly SpiralRibbon[]): void;
   uploadRailroadState(data: Uint8Array): void;
@@ -73,6 +74,7 @@ export function uploadFrameData(
         frame.trailState,
         frame.trailDirtyRowMin,
         frame.trailDirtyRowMax,
+        frame.changedTrailTiles,
       );
     }
   } else {
@@ -112,7 +114,12 @@ export function uploadFrameData(
   view.updateNukeTelegraphs(frame.nukeTelegraphs);
 
   // --- Names + player status ---
-  view.updateNames(frame.names, frame.players, false, frame.playerStatus);
+  view.updateNames(
+    frame.names,
+    frame.players,
+    frame.namesSnap ?? false,
+    frame.playerStatus,
+  );
 
   // --- Relations ---
   // Gated: updateRelations triggers a full-map border recompute downstream,

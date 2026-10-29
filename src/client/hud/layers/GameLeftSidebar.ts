@@ -4,7 +4,9 @@ import type { EventBus } from "@openfront/shared/EventBus";
 import { Colord } from "colord";
 import { html, LitElement } from "lit";
 import { customElement, property, query, state } from "lit/decorators.js";
+import { isCompactViewport } from "../../CompactViewport";
 import type { Controller } from "../../Controller";
+import { AlternateViewEvent } from "../../InputHandler";
 import { Platform } from "../../Platform";
 import { themeProvider } from "../../theme/ThemeProvider";
 import { getTranslatedPlayerTeamLabel, translateText } from "../../Utils";
@@ -21,6 +23,7 @@ const playerStatsRegularIcon = assetUrl(
 const playerStatsSolidIcon = assetUrl("images/LeaderboardIconSolidWhite.svg");
 const teamStatsRegularIcon = assetUrl("images/TeamIconRegularWhite.svg");
 const teamStatsSolidIcon = assetUrl("images/TeamIconSolidWhite.svg");
+const alternateViewIcon = assetUrl("images/TreeIconWhite.svg");
 
 @customElement("game-left-sidebar")
 export class GameLeftSidebar extends LitElement implements Controller {
@@ -38,6 +41,8 @@ export class GameLeftSidebar extends LitElement implements Controller {
   private spawnBarVisible = false;
   @state()
   private immunityBarVisible = false;
+  @state()
+  private alternateView = false;
 
   private playerColor: Colord = new Colord("#FFFFFF");
   @property({ attribute: false }) public game: GameView | null = null;
@@ -58,11 +63,17 @@ export class GameLeftSidebar extends LitElement implements Controller {
     this.eventBus?.on(ImmunityBarVisibleEvent, (e) => {
       this.immunityBarVisible = e.visible;
     });
+    // Holding the toggle-view key (space) or the settings toggle also switch
+    // the view; keep the button in step with whichever did it last.
+    this.eventBus?.on(AlternateViewEvent, (e) => {
+      this.alternateView = e.alternateView;
+    });
     if (this.isTeamGame) {
       this.isPlayerTeamLabelVisible = true;
     }
-    // Make it visible by default on large screens
-    if (Platform.isDesktopWidth) {
+    // Make it visible by default on large screens; compact ones (short laptops,
+    // Poki's frame) need the room for the map.
+    if (Platform.isDesktopWidth && !isCompactViewport()) {
       this.showPlayerStatsAfterSpawn = true;
     }
   }
@@ -105,6 +116,18 @@ export class GameLeftSidebar extends LitElement implements Controller {
     this.isTeamStatsShown = !this.isTeamStatsShown;
   }
 
+  private handleLeaderboardMouseDown = (e: MouseEvent): void => {
+    e.preventDefault();
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) {
+      active.blur();
+    }
+  };
+
+  private toggleAlternateView(): void {
+    this.eventBus?.emit(new AlternateViewEvent(!this.alternateView));
+  }
+
   private get isTeamGame(): boolean {
     return this.game?.config().gameConfig().gameMode === GameMode.Team;
   }
@@ -112,20 +135,25 @@ export class GameLeftSidebar extends LitElement implements Controller {
   render() {
     return html`
       <aside
-        class=${`fixed top-0 left-0 z-900 flex flex-col max-h-[calc(100vh-80px)] overflow-y-auto p-2 bg-gray-800/92 backdrop-blur-sm shadow-xs rounded-br-lg ${this.isPlayerStatsShown || this.isTeamStatsShown ? "max-[400px]:w-full max-[400px]:rounded-none" : ""} transition-all duration-300 ease-out transform ${
+        class=${`max-lg:fixed max-lg:top-0 max-lg:left-0 max-lg:z-900 lg:pointer-events-auto flex flex-col mt-(--bar-offset) max-h-[calc(100vh-80px)] overflow-y-auto p-2 bg-gray-800/92 backdrop-blur-sm shadow-xs rounded-br-lg ${this.isPlayerStatsShown || this.isTeamStatsShown ? "max-[400px]:w-full max-[400px]:rounded-none max-lg:mt-[calc(var(--bar-offset)+var(--game-health-offset,0px))] max-lg:max-h-[calc(100vh-80px-var(--game-health-offset,0px))]" : ""} transition-all duration-300 ease-out transform ${
           this.isVisible ? "translate-x-0" : "hidden"
         }`}
-        style="margin-top: ${this.barOffset}px;"
+        style="--bar-offset: ${this.barOffset}px;"
       >
         <div class="flex items-center gap-4 xl:gap-6 text-white">
           <div
             class="cursor-pointer p-0.5 bg-gray-700/50 hover:bg-gray-600 border rounded-md border-slate-500 transition-colors"
-            @click=${this.togglePlayerStats}
+            @mousedown=${this.handleLeaderboardMouseDown}
+            @click=${(e: MouseEvent) => {
+              if (e.detail > 0) (e.currentTarget as HTMLElement).blur();
+              this.togglePlayerStats();
+            }}
             role="button"
             tabindex="0"
             @keydown=${(e: KeyboardEvent) => {
               if (e.key === "Enter" || e.key === " " || e.code === "Space") {
                 e.preventDefault();
+                e.stopPropagation();
                 this.togglePlayerStats();
               }
             }}
@@ -149,7 +177,11 @@ export class GameLeftSidebar extends LitElement implements Controller {
               ? html`
                   <div
                     class="cursor-pointer p-0.5 bg-gray-700/50 hover:bg-gray-600 border rounded-md border-slate-500 transition-colors"
-                    @click=${this.toggleTeamStats}
+                    @mousedown=${this.handleLeaderboardMouseDown}
+                    @click=${(e: MouseEvent) => {
+                      if (e.detail > 0) (e.currentTarget as HTMLElement).blur();
+                      this.toggleTeamStats();
+                    }}
                     role="button"
                     tabindex="0"
                     @keydown=${(e: KeyboardEvent) => {
@@ -159,6 +191,7 @@ export class GameLeftSidebar extends LitElement implements Controller {
                         e.code === "Space"
                       ) {
                         e.preventDefault();
+                        e.stopPropagation();
                         this.toggleTeamStats();
                       }
                     }}
@@ -180,6 +213,32 @@ export class GameLeftSidebar extends LitElement implements Controller {
                 `
               : null
           }
+          <div
+            class="cursor-pointer p-0.5 hover:bg-gray-600 border rounded-md transition-colors ${
+              this.alternateView
+                ? "bg-gray-500 border-white"
+                : "bg-gray-700/50 border-slate-500"
+            }"
+            @click=${this.toggleAlternateView}
+            role="button"
+            tabindex="0"
+            aria-pressed=${this.alternateView ? "true" : "false"}
+            title=${translateText("user_setting.toggle_view_desc")}
+            @keydown=${(e: KeyboardEvent) => {
+              // Not space: that's the hold-to-view key, handled globally.
+              if (e.key === "Enter") {
+                e.preventDefault();
+                this.toggleAlternateView();
+              }
+            }}
+          >
+            <img
+              src=${alternateViewIcon}
+              alt=${translateText("user_setting.toggle_view_desc")}
+              width="20"
+              height="20"
+            />
+          </div>
           ${
             this.isPlayerStatsShown || this.isTeamStatsShown
               ? html`<span

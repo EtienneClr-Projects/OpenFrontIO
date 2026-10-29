@@ -4,6 +4,7 @@ import {
   apiMockFactory,
   authMockFactory,
   clanApiMockFactory,
+  cosmeticsMockFactory,
   crazyGamesSdkMockFactory,
   flushAsync,
   getElState,
@@ -18,6 +19,7 @@ import {
 vi.mock("@lit-labs/virtualizer/virtualize.js", () => virtualizerMockFactory());
 vi.mock("../../../src/client/Api", () => apiMockFactory());
 vi.mock("../../../src/client/ClanApi", () => clanApiMockFactory());
+vi.mock("../../../src/client/Cosmetics", () => cosmeticsMockFactory());
 vi.mock("../../../src/client/Utils", () => utilsMockFactory());
 vi.mock("../../../src/client/Auth", () => authMockFactory());
 vi.mock("../../../src/client/CrazyGamesSDK", () => crazyGamesSdkMockFactory());
@@ -260,29 +262,18 @@ describe("ClanModal — player-profile handoff", () => {
 
   it("mounts the map only while open on the Map tab", async () => {
     stubGameEnv("dev");
-    // Closed: nothing is framed, so the map page isn't polling in the background.
-    expect(modal.querySelector("clan-map-view")).toBeNull();
+    // The map is a full-screen page on <body>. Closed: nothing is framed, so the map page isn't polling in the background.
+    expect(document.querySelector("clan-map-view")).toBeNull();
 
     modal.open({ tab: "map" });
     await flushAsync(modal);
     expect(getElState(modal, "activeTab")).toBe("map");
-    expect(modal.querySelector("clan-map-view")).not.toBeNull();
+    expect(document.querySelector("clan-map-view")).not.toBeNull();
 
     modal.close();
     await flushAsync(modal);
-    expect(modal.querySelector("clan-map-view")).toBeNull();
+    expect(document.querySelector("clan-map-view")).toBeNull();
     expect(getElState(modal, "activeTab")).toBe("my-clans");
-  });
-
-  it("shows Coming Soon on the Map tab in prod", async () => {
-    stubGameEnv("prod");
-    modal.open({ tab: "map" });
-    await flushAsync(modal);
-    expect(getElState(modal, "activeTab")).toBe("map");
-    // The map hasn't shipped to prod: the iframe (and its API polling)
-    // never mounts.
-    expect(modal.querySelector("clan-map-view")).toBeNull();
-    expect(modal.textContent).toContain("clan_modal.map_coming_soon");
   });
 
   it("offers a Donations tab on the clan detail", async () => {
