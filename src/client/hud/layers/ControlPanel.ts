@@ -18,6 +18,8 @@ import { GameView } from "../../view";
 import { PlayerView } from "../../view/PlayerView";
 import { goldCoinIcon, soldierIcon } from "../HotbarIcons";
 import { TutorialHighlight, TutorialHighlightEvent } from "../Tutorial";
+import { goldRateTracker } from "./lib/GoldRateTracker";
+import { recordGoldRates } from "./lib/StatsColumns";
 const swordIcon = assetUrl("images/SwordIcon.svg");
 
 @customElement("control-panel")
@@ -48,6 +50,9 @@ export class ControlPanel extends LitElement implements Controller {
 
   @state()
   private _gold: Gold;
+
+  @state()
+  private _goldIncomePerMin = 0;
 
   @state()
   private _attackingTroops: number = 0;
@@ -130,6 +135,8 @@ export class ControlPanel extends LitElement implements Controller {
     this._maxTroops = config.maxTroops(player);
     this._gold = player.gold();
     this._troops = player.troops();
+    recordGoldRates(player, this.game);
+    this._goldIncomePerMin = goldRateTracker.goldIncomePerMin(player.smallID());
     this._attackingTroops = player
       .outgoingAttacks()
       .map((a) => a.troops)
@@ -506,7 +513,7 @@ export class ControlPanel extends LitElement implements Controller {
   private renderDesktop() {
     return html`
       ${this.renderNotification()}
-      <!-- Row 1: troop rate | troop bar | gold -->
+      <!-- Row 1: troop rate | gold income | troop bar | gold -->
       <div class="flex gap-1.5 items-center mb-1">
         <!-- Troop rate -->
         <div
@@ -537,6 +544,24 @@ export class ControlPanel extends LitElement implements Controller {
               this._troopRateIsIncreasing ? "text-green-400" : "text-orange-400"
             }"
             >+${renderTroops(this.troopRate)}/s</span
+          >
+        </div>
+        <!-- Gold income -->
+        <div
+          class="flex items-center gap-1 shrink-0 border rounded-md border-yellow-400 font-bold text-yellow-400 text-sm py-0.5 px-1 w-[5.5rem]"
+          title=${translateText("goldIncomePerMin")}
+          translate="no"
+        >
+          <img
+            src=${goldCoinIcon}
+            alt=""
+            aria-hidden="true"
+            width="13"
+            height="13"
+            class="shrink-0"
+          />
+          <span class="text-sm font-bold tabular-nums"
+            >${renderNumber(this._goldIncomePerMin)}/min</span
           >
         </div>
         <!-- Troop bar -->

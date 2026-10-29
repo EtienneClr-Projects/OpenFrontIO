@@ -28,6 +28,7 @@ import {
 } from "@openfront/shared/WireSchemas";
 import { ClientEnv } from "../client/ClientEnv";
 import { reloadForUpdate, translateText } from "../client/Utils";
+import { AdvisorController, isAdvisorHost } from "./advisor/AdvisorController";
 import { MapLayerController } from "./controllers/MapLayerController";
 import { isDesktopShell } from "./DesktopShell";
 import { GameMetrics } from "./GameMetrics";
@@ -73,7 +74,7 @@ import {
   terrainMapFileLoader,
 } from "./TerrainMapFileLoader";
 import { themeProvider } from "./theme/ThemeProvider";
-import { GoToPlayerEvent } from "./TransformHandler";
+import { GoToPlayerEvent, GoToPositionEvent } from "./TransformHandler";
 import {
   counterAttackTroops,
   MoveWarshipIntentEvent,
@@ -924,6 +925,7 @@ async function createClientGame(
 }
 
 export class ClientGameRunner {
+  private advisor: AdvisorController | null = null;
   private myPlayer: PlayerView | null = null;
   private isActive = false;
 
@@ -980,6 +982,21 @@ export class ClientGameRunner {
     console.log("starting client game");
 
     this.isActive = true;
+    if (
+      import.meta.env.DEV &&
+      isAdvisorHost(location.hostname) &&
+      !this.gameView.config().isReplay()
+    ) {
+      this.advisor = new AdvisorController(
+        this.gameView,
+        (tile) => {
+          this.eventBus.emit(
+            new GoToPositionEvent(this.gameView.x(tile), this.gameView.y(tile)),
+          );
+        },
+        (event) => this.eventBus.emit(event),
+      );
+    }
     this.lastMessageTime = Date.now();
     this.metrics?.start();
     setTimeout(() => {
@@ -1039,6 +1056,7 @@ export class ClientGameRunner {
         this.eventBus.emit(new SendHashEvent(hu.tick, hu.hash));
       });
       this.gameView.update(gu);
+      this.advisor?.tick();
       this.webglBuilder?.update(this.gameView);
       this.renderer.tick();
       if (gu.tickExecutionDuration !== undefined) {
@@ -1202,6 +1220,8 @@ export class ClientGameRunner {
   }
 
   public stop() {
+    this.advisor?.dispose();
+    this.advisor = null;
     this.soundManager.dispose();
     this.graphicsListenerAbort?.abort();
     // Detach the input handler's window/canvas listeners and its EventBus

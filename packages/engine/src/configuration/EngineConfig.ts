@@ -169,9 +169,6 @@ export class EngineConfig extends Config {
   donateGold(): boolean {
     return this._gameConfig.donateGold;
   }
-  goldMultiplier(): number {
-    return this._gameConfig.goldMultiplier ?? 1;
-  }
   startingGold(playerInfo: PlayerInfo): Gold {
     if (playerInfo.playerType === PlayerType.Bot) {
       return 0n;
@@ -404,15 +401,6 @@ export class EngineConfig extends Config {
       (this._gameConfig.hostCheats?.infiniteTroops ?? false) &&
       playerInfo.isLobbyCreator
     );
-  }
-
-  private goldMultiplierFor(player: PlayerLike): number {
-    const base = this.goldMultiplier();
-    const hc = this._gameConfig.hostCheats;
-    if (hc?.goldMultiplier && player.isLobbyCreator()) {
-      return hc.goldMultiplier;
-    }
-    return base;
   }
 
   public conquerGoldAmount(captured: PlayerLike): Gold {
@@ -663,17 +651,6 @@ export class EngineConfig extends Config {
       }
     }
     return this.hasInfiniteTroopsForInfo(playerInfo) ? 1_000_000 : 25_000;
-  }
-
-  goldAdditionRate(player: PlayerLike): Gold {
-    const multiplier = this.goldMultiplierFor(player);
-    let baseRate: bigint;
-    if (player.type() === PlayerType.Bot) {
-      baseRate = 50n;
-    } else {
-      baseRate = 100n;
-    }
-    return BigInt(Math.floor(Number(baseRate) * multiplier));
   }
 
   nukeSpeed(unitType: UnitType): number {

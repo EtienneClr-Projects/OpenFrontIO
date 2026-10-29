@@ -203,6 +203,22 @@ export class Config {
     return 110;
   }
 
+  goldMultiplier(): number {
+    return this._gameConfig.goldMultiplier ?? 1;
+  }
+
+  protected goldMultiplierFor(player: PlayerLike): number {
+    const hc = this._gameConfig.hostCheats;
+    return hc?.goldMultiplier && player.isLobbyCreator()
+      ? hc.goldMultiplier
+      : this.goldMultiplier();
+  }
+
+  goldAdditionRate(player: PlayerLike): bigint {
+    const baseRate = player.type() === PlayerType.Bot ? 50 : 100;
+    return BigInt(Math.floor(baseRate * this.goldMultiplierFor(player)));
+  }
+
   unitInfo(type: UnitType): UnitInfo {
     const cached = this.unitInfoCache.get(type);
     if (cached !== undefined) {
