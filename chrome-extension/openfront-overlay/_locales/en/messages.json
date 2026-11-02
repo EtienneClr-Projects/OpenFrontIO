@@ -1,0 +1,42 @@
+{
+  "extensionDescription": {
+    "message": "An opt-in, read-only strategy advisor for OpenFront.io.",
+    "description": "Extension description displayed by Chrome."
+  },
+  "advisorTitle": { "message": "Strategy advisor" },
+  "enableAdvisor": { "message": "Enable advisor for this game" },
+  "collapseAdvisor": { "message": "Minimize" },
+  "expandAdvisor": { "message": "Expand" },
+  "advisorReadOnly": {
+    "message": "Read-only guidance. No actions are executed."
+  },
+  "advisor_disabled": { "message": "Advisor is off." },
+  "advisor_waiting": { "message": "Waiting for your player to spawn." },
+  "advisor_indexing": { "message": "Analyzing the map..." },
+  "advisor_active": { "message": "Advisor is active." },
+  "advisor_catchup": {
+    "message": "Catching up; advice will resume when synchronized."
+  },
+  "advisor_finished": { "message": "Your game has finished." },
+  "advisor_unsupported": {
+    "message": "Unsupported client version. Update the extension."
+  },
+  "advisor_error": {
+    "message": "Advisor stopped after an error. See DevTools."
+  },
+  "reserve": { "message": "Troop reserves" },
+  "incoming": { "message": "Incoming attacks" },
+  "defense": {
+    "message": "You are under attack. Preserve troops and defend your territory."
+  },
+  "noIncoming": { "message": "No incoming attacks observed." },
+  "strongNeighbors": { "message": "Stronger bordering players" },
+  "noStrongNeighbors": { "message": "No stronger bordering players observed." },
+  "friendlyNeighbor": { "message": "Friendly" },
+  "hostileNeighbor": { "message": "Enemy" },
+  "phase_opening": { "message": "Phase: Opening / expansion" },
+  "phase_economy": { "message": "Phase: Economy" },
+  "phase_contested": { "message": "Phase: Contested" },
+  "phase_nuclear": { "message": "Phase: Nuclear" },
+  "phase_endgame": { "message": "Phase: Endgame" }
+}

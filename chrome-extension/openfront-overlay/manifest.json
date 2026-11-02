@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "minimum_chrome_version": "111",
+  "name": "OpenFront Overlay",
+  "version": "0.3.0",
+  "description": "__MSG_extensionDescription__",
+  "default_locale": "en",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://openfront.io/*",
+        "https://*.openfront.io/*",
+        "http://localhost:9000/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://openfront.io/*",
+        "https://*.openfront.io/*",
+        "http://localhost:9000/*"
+      ],
+      "js": ["inject.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    }
+  ]
+}
