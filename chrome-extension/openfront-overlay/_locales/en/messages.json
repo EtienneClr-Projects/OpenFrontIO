@@ -4,16 +4,12 @@
     "description": "Extension description displayed by Chrome."
   },
   "advisorTitle": { "message": "Strategy advisor" },
-  "enableAdvisor": { "message": "Enable advisor for this game" },
   "collapseAdvisor": { "message": "Minimize" },
-  "expandAdvisor": { "message": "Expand" },
-  "advisorReadOnly": {
-    "message": "Read-only guidance. No actions are executed."
-  },
+  "expandAdvisor": { "message": "Activate" },
+  "hideEnemySilos": { "message": "Hide enemy silo markers" },
   "advisor_disabled": { "message": "Advisor is off." },
   "advisor_waiting": { "message": "Waiting for your player to spawn." },
   "advisor_indexing": { "message": "Analyzing the map..." },
-  "advisor_active": { "message": "Advisor is active." },
   "advisor_catchup": {
     "message": "Catching up; advice will resume when synchronized."
   },
@@ -24,12 +20,6 @@
   "advisor_error": {
     "message": "Advisor stopped after an error. See DevTools."
   },
-  "reserve": { "message": "Troop reserves" },
-  "incoming": { "message": "Incoming attacks" },
-  "defense": {
-    "message": "You are under attack. Preserve troops and defend your territory."
-  },
-  "noIncoming": { "message": "No incoming attacks observed." },
   "strongNeighbors": { "message": "Stronger bordering players" },
   "noStrongNeighbors": { "message": "No stronger bordering players observed." },
   "friendlyNeighbor": { "message": "Friendly" },

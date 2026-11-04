@@ -254,6 +254,7 @@ var OpenFrontOverlay = (function(exports) {
 			cap: null,
 			reservePercent: null,
 			incoming: null,
+			recommendation: null,
 			context: null,
 			neighbors: []
 		};
@@ -330,13 +331,23 @@ var OpenFrontOverlay = (function(exports) {
 				friendly: p === me || !disconnected && bool(me.isFriendly(p), "friendship"),
 				tiles: finite(p.numTilesOwned(), "player territory"),
 				troops: rawTroops(p.troops()),
-				incoming: sum(p.incomingAttacks()),
+				incoming: 0,
 				outgoing: sum(p.outgoingAttacks()),
 				doomed: bool(p.state?.inDoomsdayClock, "doomsday state"),
 				traitor: false,
 				alliances: []
 			};
 		});
+		const playerTypes = new Map(players.map((p) => [p.id, p.type]));
+		for (const [index, p] of remotePlayers.entries()) {
+			const attacks = p.incomingAttacks();
+			if (!Array.isArray(attacks)) throw new UnsupportedClient("Invalid attacks.");
+			players[index].incoming = rawTroops(attacks.reduce((total, attack) => {
+				const troops = finite(attack.troops, "attack troops");
+				if (!Number.isSafeInteger(attack.attackerID) || attack.attackerID <= 0) throw new UnsupportedClient("Invalid attack sender.");
+				return playerTypes.get(attack.attackerID) === PlayerType.Bot ? total : total + troops;
+			}, 0));
+		}
 		const myID = me.smallID();
 		const own = players.find((p) => p.id === myID);
 		if (!own) throw new UnsupportedClient("Local player absent from players().");
@@ -400,14 +411,18 @@ var OpenFrontOverlay = (function(exports) {
 	}
 	function analyze(o, map, spatial) {
 		const me = o.players.find((p) => p.id === o.myID);
+		const context = gamePhase(o, map, spatial);
+		const reserveThreshold = context === "opening" ? .33 : .42;
+		const strongerNeighbors = o.players.filter((p) => p.id !== me.id && p.alive && spatial.fronts.has(p.id) && p.troops > me.troops);
 		return {
 			status: "active",
 			enabled: true,
 			cap: rawTroops(o.cap),
 			reservePercent: Math.round(me.troops / Math.max(1, o.cap) * 100),
 			incoming: rawTroops(me.incoming),
-			context: gamePhase(o, map, spatial),
-			neighbors: o.players.filter((p) => p.id !== me.id && p.alive && spatial.fronts.has(p.id) && p.troops > me.troops).map((p) => ({
+			recommendation: me.incoming === 0 && strongerNeighbors.length === 0 && me.troops > o.cap * reserveThreshold ? "push" : "retain",
+			context,
+			neighbors: strongerNeighbors.map((p) => ({
 				id: p.id,
 				name: p.name.slice(0, 200),
 				troops: rawTroops(p.troops),
@@ -545,13 +560,19 @@ var OpenFrontOverlay = (function(exports) {
 			if (!this.active) return;
 			const me = this.game.myPlayer();
 			if (me) methods(me, ["isAlive", "smallID"], "myPlayer");
+			if (bool(this.game.inSpawnPhase(), "spawn phase")) {
+				this.clearIndex();
+				this.snapshot = emptyAdvisor("waiting", true);
+				this.emit();
+				return;
+			}
 			if (bool(this.game.gameOver(), "gameOver") || me && !bool(me.isAlive(), "player alive")) {
 				this.stop();
 				this.snapshot = emptyAdvisor("finished");
 				this.emit(true);
 				return;
 			}
-			if (!me || bool(this.game.inSpawnPhase(), "spawn phase")) {
+			if (!me) {
 				this.clearIndex();
 				this.snapshot = emptyAdvisor("waiting", true);
 				this.emit();
@@ -603,16 +624,27 @@ var OpenFrontOverlay = (function(exports) {
 	function isControl(data) {
 		if (!data || typeof data !== "object") return false;
 		const value = data;
-		return Object.keys(value).length === 2 && value.type === "OPENFRONT_OVERLAY_CONTROL" && typeof value.enabled === "boolean";
+		return Object.keys(value).every((key) => [
+			"type",
+			"enabled",
+			"requestId"
+		].includes(key)) && value.type === "OPENFRONT_OVERLAY_CONTROL" && typeof value.enabled === "boolean" && (value.requestId === void 0 || Number.isSafeInteger(value.requestId) && Number(value.requestId) > 0);
 	}
 	function startBridge() {
 		let game = null;
+		let buildMenu = null;
 		let observer = null;
 		let advisor = emptyAdvisor();
 		let stopped = false;
 		let inGame = false;
 		let lastError = null;
+		let lastSiloError = null;
+		let lastSiloSignature = null;
+		let hasEnemySilos = false;
 		let discoveryError = null;
+		let requestedEnabled = false;
+		let controlId = 0;
+		let siloFrame = null;
 		const discover = () => {
 			try {
 				readDiscovery();
@@ -621,6 +653,7 @@ var OpenFrontOverlay = (function(exports) {
 				observer?.dispose();
 				observer = null;
 				game = null;
+				requestedEnabled = false;
 				discoveryError = /* @__PURE__ */ new Error(`Cannot discover GameView: ${error instanceof Error ? error.message : String(error)}`);
 				advisor = {
 					...emptyAdvisor("error"),
@@ -630,14 +663,95 @@ var OpenFrontOverlay = (function(exports) {
 		};
 		const readDiscovery = () => {
 			const playing = !!document.body?.classList.contains("in-game");
-			const found = playing ? document.querySelector("build-menu")?.game ?? null : null;
+			const foundMenu = playing ? document.querySelector("build-menu") : null;
+			const found = foundMenu?.game ?? null;
 			if (found !== game || playing !== inGame) {
+				if (!playing || playing !== inGame || game !== null) requestedEnabled = false;
 				observer?.dispose();
 				observer = null;
 				game = found;
+				buildMenu = foundMenu;
 				inGame = playing;
-				advisor = emptyAdvisor();
+				lastSiloError = null;
+				lastSiloSignature = null;
+				hasEnemySilos = false;
+				advisor = emptyAdvisor(requestedEnabled ? "waiting" : "disabled", requestedEnabled);
+			} else buildMenu = foundMenu;
+		};
+		const enableObserver = () => {
+			if (!game || observer || !requestedEnabled) return;
+			observer = new GameObserver(game, (snapshot, urgent) => {
+				advisor = snapshot;
+				if (!snapshot.enabled) requestedEnabled = false;
+				if (urgent) publish();
+			});
+			observer.setEnabled(true);
+			advisor = observer.snapshot;
+		};
+		const readEnemySilos = () => {
+			let missileSilos = [];
+			try {
+				if (inGame && game) {
+					const currentGame = game;
+					if (typeof currentGame.myPlayer !== "function") throw new Error("Missing GameView.myPlayer().");
+					const player = currentGame.myPlayer();
+					if (!player) {
+						hasEnemySilos = false;
+						return missileSilos;
+					}
+					const transform = buildMenu?.transformHandler;
+					if (!transform || typeof transform.worldToScreenCoordinates !== "function" || !Number.isFinite(transform.scale) || transform.scale <= 0) throw new Error("Missing BuildMenu.transformHandler.");
+					if (typeof currentGame.units !== "function" || typeof currentGame.x !== "function" || typeof currentGame.y !== "function" || typeof player.smallID !== "function" || typeof player.isFriendly !== "function") throw new Error("Missing GameView unit coordinates.");
+					const units = currentGame.units(UnitType.MissileSilo);
+					if (!Array.isArray(units)) throw new Error("Invalid GameView units.");
+					missileSilos = [];
+					for (const unit of units) {
+						if (typeof unit.isActive !== "function") throw new Error("Missing unit.isActive().");
+						if (!unit.isActive()) continue;
+						if (typeof unit.id !== "function" || typeof unit.owner !== "function" || typeof unit.tile !== "function") throw new Error("Missing enemy silo data.");
+						const owner = unit.owner();
+						if (!owner || typeof owner.smallID !== "function" || typeof owner.isAlive !== "function") throw new Error("Missing enemy silo owner data.");
+						const ownerID = owner.smallID();
+						if (!Number.isSafeInteger(ownerID)) throw new Error("Invalid enemy silo owner.");
+						if (!owner.isAlive() || ownerID === player.smallID() || player.isFriendly(owner)) continue;
+						const tile = unit.tile();
+						if (!Number.isSafeInteger(tile) || tile < 0) throw new Error("Invalid enemy silo tile.");
+						const world = {
+							x: currentGame.x(tile) + .5,
+							y: currentGame.y(tile) + .5
+						};
+						const screen = transform.worldToScreenCoordinates(world);
+						const marker = {
+							id: unit.id(),
+							x: screen.x,
+							y: screen.y,
+							radius: Math.max(12, Math.min(42, transform.scale * 1.7))
+						};
+						if (!Number.isSafeInteger(marker.id) || !Number.isFinite(marker.x) || !Number.isFinite(marker.y)) throw new Error("Invalid enemy silo position.");
+						missileSilos.push(marker);
+					}
+				}
+				lastSiloError = null;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (message !== lastSiloError) {
+					console.error("[OpenFront Overlay] Cannot read enemy silo positions:", error);
+					lastSiloError = message;
+				}
 			}
+			hasEnemySilos = missileSilos.length > 0;
+			return missileSilos;
+		};
+		const publishSiloMarkers = (force = false) => {
+			if (stopped) return;
+			const missileSilos = readEnemySilos();
+			const signature = JSON.stringify(missileSilos);
+			if (!force && signature === lastSiloSignature) return;
+			lastSiloSignature = signature;
+			window.postMessage({
+				type: "OPENFRONT_OVERLAY_SILOS",
+				missileSilos
+			}, window.location.origin);
 		};
 		const publish = () => {
 			if (stopped) return;
@@ -666,37 +780,54 @@ var OpenFrontOverlay = (function(exports) {
 				}
 				status = "unavailable";
 			}
+			const missileSilos = readEnemySilos();
+			lastSiloSignature = JSON.stringify(missileSilos);
 			window.postMessage({
 				type: "OPENFRONT_OVERLAY_STATE",
 				status,
 				troops,
-				advisor
+				advisor,
+				controlId,
+				missileSilos
 			}, window.location.origin);
 		};
 		const control = (event) => {
 			if (event.source !== window || event.origin !== window.location.origin || !isControl(event.data)) return;
 			discover();
+			controlId = event.data.requestId ?? controlId;
+			requestedEnabled = inGame && !discoveryError && event.data.enabled;
 			if (!game) {
+				if (!discoveryError) advisor = emptyAdvisor(requestedEnabled ? "waiting" : "disabled", requestedEnabled);
 				publish();
 				return;
 			}
-			observer ??= new GameObserver(game, (snapshot, urgent) => {
-				advisor = snapshot;
-				if (urgent) publish();
-			});
-			observer.setEnabled(event.data.enabled);
-			advisor = observer.snapshot;
+			observer?.dispose();
+			observer = null;
+			advisor = emptyAdvisor();
+			enableObserver();
 			publish();
+		};
+		const scheduleSiloFrame = () => {
+			if (stopped || !inGame || !game || !hasEnemySilos || siloFrame !== null) return;
+			siloFrame = window.requestAnimationFrame(() => {
+				siloFrame = null;
+				if (!inGame || !game || stopped) return;
+				publishSiloMarkers();
+				scheduleSiloFrame();
+			});
 		};
 		const poll = () => {
 			discover();
+			enableObserver();
 			observer?.poll();
 			publish();
+			scheduleSiloFrame();
 		};
 		const stop = () => {
 			stopped = true;
 			observer?.dispose();
 			window.clearInterval(timer);
+			if (siloFrame !== null) window.cancelAnimationFrame(siloFrame);
 			window.removeEventListener("message", control);
 			window.removeEventListener("pagehide", stop);
 			window.__openfrontOverlayBridgeStarted = false;
