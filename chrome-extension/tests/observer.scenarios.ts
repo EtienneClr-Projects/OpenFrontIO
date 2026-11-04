@@ -847,6 +847,13 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
       { id: 1, x: 15, y: 10, radius: 12 },
     ]);
     assert.equal(
+      messages.filter(
+        (message) => message.type === "OPENFRONT_OVERLAY_FIRST_ENEMY_SILO",
+      ).length,
+      1,
+      "first enemy silo triggers one warning",
+    );
+    assert.equal(
       animationFrames.size,
       1,
       "enemy silo positions should be sampled on the next animation frame",
@@ -868,6 +875,14 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
       messages.length,
       markerFrameCount,
       "unchanged markers are not republished",
+    );
+    interval!();
+    assert.equal(
+      messages.filter(
+        (message) => message.type === "OPENFRONT_OVERLAY_FIRST_ENEMY_SILO",
+      ).length,
+      1,
+      "polling does not repeat the first-silo warning",
     );
     f.me.troops = () => {
       throw new Error("fixture troops failure");

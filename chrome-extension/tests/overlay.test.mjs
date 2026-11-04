@@ -289,19 +289,19 @@ await test("enemy silo markers track screen coordinates and disappear when clear
   assert.equal(layer.style.position, "fixed");
   assert.equal(layer.style.zIndex, "2147483646");
   assert.equal(layer.style.pointerEvents, "none");
-  const hideCheckbox = descendants(elements[0]).find(
+  const findCheckbox = descendants(elements[0]).find(
     (element) => element.tag === "input",
   );
-  assert.ok(hideCheckbox);
-  assert.equal(hideCheckbox.type, "checkbox");
-  assert.equal(hideCheckbox.checked, false);
+  assert.ok(findCheckbox);
+  assert.equal(findCheckbox.type, "checkbox");
+  assert.equal(findCheckbox.checked, true);
   assert.equal(
-    hideCheckbox.attributes["aria-label"],
-    messages.hideEnemySilos.message,
+    findCheckbox.attributes["aria-label"],
+    messages.findEnemySilos.message,
   );
   assert.equal(layer.style.display, "block");
-  hideCheckbox.checked = true;
-  hideCheckbox.listeners.change();
+  findCheckbox.checked = false;
+  findCheckbox.listeners.change();
   assert.equal(layer.style.display, "none");
   const pulseStyles = descendants(layer).find(
     (element) => element.tag === "style",
@@ -322,11 +322,11 @@ await test("enemy silo markers track screen coordinates and disappear when clear
   assert.match(ring.style.filter, /drop-shadow\(0 0 3px #111\)/);
   assert.match(ring.style.animation, /900ms ease-in-out infinite alternate/);
 
-  hideCheckbox.checked = false;
-  hideCheckbox.listeners.change();
+  findCheckbox.checked = true;
+  findCheckbox.listeners.change();
   assert.equal(layer.style.display, "block");
-  hideCheckbox.checked = true;
-  hideCheckbox.listeners.change();
+  findCheckbox.checked = false;
+  findCheckbox.listeners.change();
   assert.equal(layer.style.display, "none");
 
   assert.equal(ring.dataset.offscreen, "false");
@@ -354,6 +354,47 @@ await test("enemy silo markers track screen coordinates and disappear when clear
     descendants(layer).some(
       (element) => element.dataset.openfrontEnemySilo === "12",
     ),
+    false,
+  );
+});
+
+await test("first enemy silo warning appears in the center and fades", () => {
+  const { context, elements, send } = createContext();
+  runInNewContext(source, context);
+  send({}, { data: { type: "OPENFRONT_OVERLAY_FIRST_ENEMY_SILO" } });
+
+  const warning = elements.find(
+    (element) => element.id === "openfront-enemy-silo-warning",
+  );
+  assert.ok(warning);
+  assert.equal(warning.attributes.role, "alert");
+  assert.equal(warning.textContent, messages.firstEnemySiloWarning.message);
+  assert.equal(warning.style.left, "50%");
+  assert.equal(warning.style.top, "50%");
+  assert.equal(warning.style.pointerEvents, "none");
+  assert.match(warning.style.animation, /2\.4s ease-out forwards/);
+
+  send({}, { data: { type: "OPENFRONT_OVERLAY_FIRST_ENEMY_SILO" } });
+  assert.equal(
+    elements.filter((element) => element.id === "openfront-enemy-silo-warning")
+      .length,
+    1,
+  );
+  assert.match(warning.style.animation, /2\.4s ease-out forwards/);
+});
+
+await test("first enemy silo warning is disabled with Find enemy silos", () => {
+  const { context, elements, send } = createContext();
+  runInNewContext(source, context);
+  const findCheckbox = descendants(elements[0]).find(
+    (element) => element.tag === "input",
+  );
+  assert.ok(findCheckbox);
+  findCheckbox.checked = false;
+  findCheckbox.listeners.change();
+  send({}, { data: { type: "OPENFRONT_OVERLAY_FIRST_ENEMY_SILO" } });
+  assert.equal(
+    elements.some((element) => element.id === "openfront-enemy-silo-warning"),
     false,
   );
 });
@@ -705,7 +746,7 @@ await test("UI keeps accessible names and renders the silo visibility checkbox",
   assert.equal(nodes.filter((element) => element.tag === "label").length, 1);
   assert.equal(
     nodes.some(
-      (element) => element.textContent === messages.hideEnemySilos.message,
+      (element) => element.textContent === messages.findEnemySilos.message,
     ),
     true,
   );

@@ -58,9 +58,10 @@ updated.
 ## Enemy missile silos
 
 While in a game, active missile silos owned by living players who are not the
-local player or a friendly are automatically marked with orange triangles,
-matching the silo icon's pointed silhouette. The markers follow the map camera
-and zoom, update with the game state, and do not intercept clicks or send
+local player or a friendly are marked with orange triangles when **Find enemy
+silos** is checked (the default). Unchecking it hides the triangles and
+disables the first-silo warning. The markers match the silo icon's pointed
+silhouette, follow the map camera and zoom, and do not intercept clicks or send
 gameplay actions. They remain visible while the advisor panel is minimized.
 While an enemy silo is present, its screen position is checked each animation
 frame; unchanged markers are not resent. When a silo is outside the viewport,
@@ -68,6 +69,9 @@ its triangle moves to the nearest point on the viewport edge along the ray from
 the screen center, with a chevron pointing toward the silo. The marker layer
 stays above game overlays and does not intercept pointer input; a light and
 dark outline keeps the triangle visible against varied terrain.
+
+The first time a living enemy silo is detected in a game, a centered warning
+appears for about two seconds and then fades away.
 
 ## Load in Chrome
 

@@ -6,7 +6,10 @@
   "advisorTitle": { "message": "Strategy advisor" },
   "collapseAdvisor": { "message": "Minimize" },
   "expandAdvisor": { "message": "Activate" },
-  "hideEnemySilos": { "message": "Hide enemy silo markers" },
+  "findEnemySilos": { "message": "Find enemy silos" },
+  "firstEnemySiloWarning": {
+    "message": "An enemy has built their first missile silo!"
+  },
   "advisor_disabled": { "message": "Advisor is off." },
   "advisor_waiting": { "message": "Waiting for your player to spawn." },
   "advisor_indexing": { "message": "Analyzing the map..." },

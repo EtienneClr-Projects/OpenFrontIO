@@ -641,6 +641,7 @@ var OpenFrontOverlay = (function(exports) {
 		let lastSiloError = null;
 		let lastSiloSignature = null;
 		let hasEnemySilos = false;
+		let hasWarnedFirstEnemySilo = false;
 		let discoveryError = null;
 		let requestedEnabled = false;
 		let controlId = 0;
@@ -675,6 +676,7 @@ var OpenFrontOverlay = (function(exports) {
 				lastSiloError = null;
 				lastSiloSignature = null;
 				hasEnemySilos = false;
+				hasWarnedFirstEnemySilo = false;
 				advisor = emptyAdvisor(requestedEnabled ? "waiting" : "disabled", requestedEnabled);
 			} else buildMenu = foundMenu;
 		};
@@ -740,6 +742,10 @@ var OpenFrontOverlay = (function(exports) {
 				}
 			}
 			hasEnemySilos = missileSilos.length > 0;
+			if (hasEnemySilos && !hasWarnedFirstEnemySilo) {
+				hasWarnedFirstEnemySilo = true;
+				window.postMessage({ type: "OPENFRONT_OVERLAY_FIRST_ENEMY_SILO" }, window.location.origin);
+			}
 			return missileSilos;
 		};
 		const publishSiloMarkers = (force = false) => {
