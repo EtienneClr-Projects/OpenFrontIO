@@ -1,5 +1,26 @@
+import { UnitType } from "@openfront/engine-api/game/GameTypes";
 import { emptyAdvisor, GameObserver, rawTroops } from "./Observer";
 import type { AdvisorSnapshot, RemoteGame } from "./Observer";
+
+interface RemoteTransformHandler {
+  scale: number;
+  worldToScreenCoordinates(cell: { x: number; y: number }): {
+    x: number;
+    y: number;
+  };
+}
+
+interface RemoteBuildMenu extends Element {
+  game?: RemoteGame;
+  transformHandler?: RemoteTransformHandler;
+}
+
+export interface EnemySiloMarker {
+  id: number;
+  x: number;
+  y: number;
+  radius: number;
+}
 
 declare global {
   interface Window {
@@ -7,26 +28,39 @@ declare global {
   }
 }
 
-export function isControl(
-  data: unknown,
-): data is { type: "OPENFRONT_OVERLAY_CONTROL"; enabled: boolean } {
+export function isControl(data: unknown): data is {
+  type: "OPENFRONT_OVERLAY_CONTROL";
+  enabled: boolean;
+  requestId?: number;
+} {
   if (!data || typeof data !== "object") return false;
   const value = data as Record<string, unknown>;
   return (
-    Object.keys(value).length === 2 &&
+    Object.keys(value).every((key) =>
+      ["type", "enabled", "requestId"].includes(key),
+    ) &&
     value.type === "OPENFRONT_OVERLAY_CONTROL" &&
-    typeof value.enabled === "boolean"
+    typeof value.enabled === "boolean" &&
+    (value.requestId === undefined ||
+      (Number.isSafeInteger(value.requestId) && Number(value.requestId) > 0))
   );
 }
 
 export function startBridge(): () => void {
   let game: RemoteGame | null = null;
+  let buildMenu: RemoteBuildMenu | null = null;
   let observer: GameObserver | null = null;
   let advisor: AdvisorSnapshot = emptyAdvisor();
   let stopped = false;
   let inGame = false;
   let lastError: string | null = null;
+  let lastSiloError: string | null = null;
+  let lastSiloSignature: string | null = null;
+  let hasEnemySilos = false;
   let discoveryError: Error | null = null;
+  let requestedEnabled = false;
+  let controlId = 0;
+  let siloFrame: number | null = null;
 
   const discover = () => {
     try {
@@ -36,6 +70,7 @@ export function startBridge(): () => void {
       observer?.dispose();
       observer = null;
       game = null;
+      requestedEnabled = false;
       discoveryError = new Error(
         `Cannot discover GameView: ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -48,20 +83,153 @@ export function startBridge(): () => void {
 
   const readDiscovery = () => {
     const playing = !!document.body?.classList.contains("in-game");
-    const found = playing
-      ? ((
-          document.querySelector("build-menu") as
-            | (Element & { game?: RemoteGame })
-            | null
-        )?.game ?? null)
+    const foundMenu = playing
+      ? (document.querySelector("build-menu") as RemoteBuildMenu | null)
       : null;
+    const found = foundMenu?.game ?? null;
     if (found !== game || playing !== inGame) {
+      if (!playing || playing !== inGame || game !== null) {
+        requestedEnabled = false;
+      }
       observer?.dispose();
       observer = null;
       game = found;
+      buildMenu = foundMenu;
       inGame = playing;
-      advisor = emptyAdvisor();
+      lastSiloError = null;
+      lastSiloSignature = null;
+      hasEnemySilos = false;
+      advisor = emptyAdvisor(
+        requestedEnabled ? "waiting" : "disabled",
+        requestedEnabled,
+      );
+    } else {
+      buildMenu = foundMenu;
     }
+  };
+
+  const enableObserver = () => {
+    if (!game || observer || !requestedEnabled) return;
+    observer = new GameObserver(game, (snapshot, urgent) => {
+      advisor = snapshot;
+      if (!snapshot.enabled) requestedEnabled = false;
+      if (urgent) publish();
+    });
+    observer.setEnabled(true);
+    advisor = observer.snapshot;
+  };
+
+  const readEnemySilos = (): EnemySiloMarker[] => {
+    let missileSilos: EnemySiloMarker[] = [];
+    try {
+      if (inGame && game) {
+        const currentGame = game;
+        if (typeof currentGame.myPlayer !== "function")
+          throw new Error("Missing GameView.myPlayer().");
+        const player = currentGame.myPlayer();
+        if (!player) {
+          hasEnemySilos = false;
+          return missileSilos;
+        }
+        const transform = buildMenu?.transformHandler;
+        if (
+          !transform ||
+          typeof transform.worldToScreenCoordinates !== "function" ||
+          !Number.isFinite(transform.scale) ||
+          transform.scale <= 0
+        ) {
+          throw new Error("Missing BuildMenu.transformHandler.");
+        }
+        if (
+          typeof currentGame.units !== "function" ||
+          typeof currentGame.x !== "function" ||
+          typeof currentGame.y !== "function" ||
+          typeof player.smallID !== "function" ||
+          typeof player.isFriendly !== "function"
+        ) {
+          throw new Error("Missing GameView unit coordinates.");
+        }
+        const units = currentGame.units(UnitType.MissileSilo);
+        if (!Array.isArray(units)) throw new Error("Invalid GameView units.");
+        missileSilos = [];
+        for (const unit of units) {
+          if (typeof unit.isActive !== "function")
+            throw new Error("Missing unit.isActive().");
+          if (!unit.isActive()) continue;
+          if (
+            typeof unit.id !== "function" ||
+            typeof unit.owner !== "function" ||
+            typeof unit.tile !== "function"
+          ) {
+            throw new Error("Missing enemy silo data.");
+          }
+          const owner = unit.owner();
+          if (
+            !owner ||
+            typeof owner.smallID !== "function" ||
+            typeof owner.isAlive !== "function"
+          ) {
+            throw new Error("Missing enemy silo owner data.");
+          }
+          const ownerID = owner.smallID();
+          if (!Number.isSafeInteger(ownerID))
+            throw new Error("Invalid enemy silo owner.");
+          if (
+            !owner.isAlive() ||
+            ownerID === player.smallID() ||
+            player.isFriendly(owner)
+          ) {
+            continue;
+          }
+          const tile = unit.tile();
+          if (!Number.isSafeInteger(tile) || tile < 0)
+            throw new Error("Invalid enemy silo tile.");
+          const world = {
+            x: currentGame.x(tile) + 0.5,
+            y: currentGame.y(tile) + 0.5,
+          };
+          const screen = transform.worldToScreenCoordinates(world);
+          const marker = {
+            id: unit.id(),
+            x: screen.x,
+            y: screen.y,
+            radius: Math.max(12, Math.min(42, transform.scale * 1.7)),
+          };
+          if (
+            !Number.isSafeInteger(marker.id) ||
+            !Number.isFinite(marker.x) ||
+            !Number.isFinite(marker.y)
+          ) {
+            throw new Error("Invalid enemy silo position.");
+          }
+          missileSilos.push(marker);
+        }
+      }
+      lastSiloError = null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== lastSiloError) {
+        console.error(
+          "[OpenFront Overlay] Cannot read enemy silo positions:",
+          error,
+        );
+        lastSiloError = message;
+      }
+    }
+    hasEnemySilos = missileSilos.length > 0;
+    return missileSilos;
+  };
+
+  const publishSiloMarkers = (force = false) => {
+    if (stopped) return;
+    const missileSilos = readEnemySilos();
+    const signature = JSON.stringify(missileSilos);
+    if (!force && signature === lastSiloSignature) return;
+    lastSiloSignature = signature;
+    window.postMessage(
+      { type: "OPENFRONT_OVERLAY_SILOS", missileSilos },
+      window.location.origin,
+    );
   };
 
   const publish = () => {
@@ -93,8 +261,17 @@ export function startBridge(): () => void {
       }
       status = "unavailable";
     }
+    const missileSilos = readEnemySilos();
+    lastSiloSignature = JSON.stringify(missileSilos);
     window.postMessage(
-      { type: "OPENFRONT_OVERLAY_STATE", status, troops, advisor },
+      {
+        type: "OPENFRONT_OVERLAY_STATE",
+        status,
+        troops,
+        advisor,
+        controlId,
+        missileSilos,
+      },
       window.location.origin,
     );
   };
@@ -107,27 +284,46 @@ export function startBridge(): () => void {
     )
       return;
     discover();
+    controlId = event.data.requestId ?? controlId;
+    requestedEnabled = inGame && !discoveryError && event.data.enabled;
     if (!game) {
+      if (!discoveryError) {
+        advisor = emptyAdvisor(
+          requestedEnabled ? "waiting" : "disabled",
+          requestedEnabled,
+        );
+      }
       publish();
       return;
     }
-    observer ??= new GameObserver(game, (snapshot, urgent) => {
-      advisor = snapshot;
-      if (urgent) publish();
-    });
-    observer.setEnabled(event.data.enabled);
-    advisor = observer.snapshot;
+    observer?.dispose();
+    observer = null;
+    advisor = emptyAdvisor();
+    enableObserver();
     publish();
+  };
+  const scheduleSiloFrame = () => {
+    if (stopped || !inGame || !game || !hasEnemySilos || siloFrame !== null)
+      return;
+    siloFrame = window.requestAnimationFrame(() => {
+      siloFrame = null;
+      if (!inGame || !game || stopped) return;
+      publishSiloMarkers();
+      scheduleSiloFrame();
+    });
   };
   const poll = () => {
     discover();
+    enableObserver();
     observer?.poll();
     publish();
+    scheduleSiloFrame();
   };
   const stop = () => {
     stopped = true;
     observer?.dispose();
     window.clearInterval(timer);
+    if (siloFrame !== null) window.cancelAnimationFrame(siloFrame);
     window.removeEventListener("message", control);
     window.removeEventListener("pagehide", stop);
     window.__openfrontOverlayBridgeStarted = false;

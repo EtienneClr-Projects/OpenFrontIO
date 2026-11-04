@@ -25,6 +25,7 @@ export interface AdvisorSnapshot {
   cap: number | null;
   reservePercent: number | null;
   incoming: number | null;
+  recommendation: "push" | "retain" | null;
   context: AdviceContext | null;
   neighbors: { id: number; name: string; friendly: boolean; troops: number }[];
   error?: string;
@@ -39,7 +40,7 @@ export interface RemotePlayer {
   isFriendly(player: RemotePlayer): boolean;
   numTilesOwned(): number;
   troops(): number;
-  incomingAttacks(): { troops: number }[];
+  incomingAttacks(): { troops: number; attackerID: number }[];
   outgoingAttacks(): { troops: number }[];
   state: { isDisconnected: boolean; inDoomsdayClock: boolean };
 }
@@ -64,9 +65,11 @@ export interface RemoteConfig {
 
 export interface RemoteGame extends AdvisorMap {
   update(...args: unknown[]): unknown;
+  x(tile: number): number;
+  y(tile: number): number;
   myPlayer(): RemotePlayer | null;
   players(): RemotePlayer[];
-  units(): RemoteUnit[];
+  units(...types: UnitType[]): RemoteUnit[];
   config(): RemoteConfig;
   ticks(): number;
   ticksSinceStart(): number;
@@ -121,6 +124,7 @@ export function emptyAdvisor(
     cap: null,
     reservePercent: null,
     incoming: null,
+    recommendation: null,
     context: null,
     neighbors: [],
   };
@@ -232,13 +236,29 @@ export function observe(game: RemoteGame): AdvisorObservation {
         p === me || (!disconnected && bool(me.isFriendly(p), "friendship")),
       tiles: finite(p.numTilesOwned(), "player territory"),
       troops: rawTroops(p.troops()),
-      incoming: sum(p.incomingAttacks()),
+      incoming: 0,
       outgoing: sum(p.outgoingAttacks()),
       doomed: bool(p.state?.inDoomsdayClock, "doomsday state"),
       traitor: false,
       alliances: [],
     };
   });
+  const playerTypes = new Map(players.map((p) => [p.id, p.type]));
+  for (const [index, p] of remotePlayers.entries()) {
+    const attacks = p.incomingAttacks();
+    if (!Array.isArray(attacks))
+      throw new UnsupportedClient("Invalid attacks.");
+    players[index].incoming = rawTroops(
+      attacks.reduce((total, attack) => {
+        const troops = finite(attack.troops, "attack troops");
+        if (!Number.isSafeInteger(attack.attackerID) || attack.attackerID <= 0)
+          throw new UnsupportedClient("Invalid attack sender.");
+        return playerTypes.get(attack.attackerID) === PlayerType.Bot
+          ? total
+          : total + troops;
+      }, 0),
+    );
+  }
   const myID = me.smallID();
   const own = players.find((p) => p.id === myID);
   if (!own) throw new UnsupportedClient("Local player absent from players().");
@@ -340,21 +360,29 @@ export function analyze(
   spatial: SpatialIndex,
 ): AdvisorSnapshot {
   const me = o.players.find((p) => p.id === o.myID)!;
+  const context = gamePhase(o, map, spatial);
+  const reserveThreshold = context === "opening" ? 0.33 : 0.42;
+  const strongerNeighbors = o.players.filter(
+    (p) =>
+      p.id !== me.id &&
+      p.alive &&
+      spatial.fronts.has(p.id) &&
+      p.troops > me.troops,
+  );
   return {
     status: "active",
     enabled: true,
     cap: rawTroops(o.cap),
     reservePercent: Math.round((me.troops / Math.max(1, o.cap)) * 100),
     incoming: rawTroops(me.incoming),
-    context: gamePhase(o, map, spatial),
-    neighbors: o.players
-      .filter(
-        (p) =>
-          p.id !== me.id &&
-          p.alive &&
-          spatial.fronts.has(p.id) &&
-          p.troops > me.troops,
-      )
+    recommendation:
+      me.incoming === 0 &&
+      strongerNeighbors.length === 0 &&
+      me.troops > o.cap * reserveThreshold
+        ? "push"
+        : "retain",
+    context,
+    neighbors: strongerNeighbors
       .map((p) => ({
         id: p.id,
         name: p.name.slice(0, 200),
@@ -536,6 +564,12 @@ export class GameObserver {
     if (!this.active) return;
     const me = this.game.myPlayer();
     if (me) methods(me, ["isAlive", "smallID"], "myPlayer");
+    if (bool(this.game.inSpawnPhase(), "spawn phase")) {
+      this.clearIndex();
+      this.snapshot = emptyAdvisor("waiting", true);
+      this.emit();
+      return;
+    }
     if (
       bool(this.game.gameOver(), "gameOver") ||
       (me && !bool(me.isAlive(), "player alive"))
@@ -545,7 +579,7 @@ export class GameObserver {
       this.emit(true);
       return;
     }
-    if (!me || bool(this.game.inSpawnPhase(), "spawn phase")) {
+    if (!me) {
       this.clearIndex();
       this.snapshot = emptyAdvisor("waiting", true);
       this.emit();

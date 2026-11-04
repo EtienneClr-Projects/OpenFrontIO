@@ -45,6 +45,8 @@ function fixture(size = 32) {
   const game: RemoteGame = {
     width: () => size,
     height: () => 1,
+    x: (tile) => tile,
+    y: () => 0,
     isLand: () => {
       reads++;
       return true;
@@ -80,7 +82,8 @@ function fixture(size = 32) {
       nukeMagnitudes: () => ({ outer: 3 }),
     }),
   };
-  me.incomingAttacks = () => (incoming ? [{ troops: incoming }] : []);
+  me.incomingAttacks = () =>
+    incoming ? [{ troops: incoming, attackerID: enemy.smallID() }] : [];
   me.outgoingAttacks = () => (outgoing ? [{ troops: outgoing }] : []);
   const queued = new Map<number, () => void>();
   let time = 0;
@@ -306,6 +309,22 @@ void test("spawn, spectator, death, completion and re-enable reset lifecycle", (
   assert.equal(f.queued.size, 0);
 });
 
+void test("pre-spawn game-over state remains enabled until spawning is available", () => {
+  const f = fixture();
+  f.setSpawn(true);
+  f.setOver(true);
+  f.observer.setEnabled(true);
+  assert.equal(f.observer.snapshot.status, "waiting");
+  assert.equal(f.observer.snapshot.enabled, true);
+
+  f.setOver(false);
+  f.setSpawn(false);
+  f.observer.poll();
+  f.drain();
+  assert.equal(f.observer.snapshot.status, "active");
+  assert.equal(f.observer.snapshot.enabled, true);
+});
+
 void test("unsupported APIs and analysis failures never throw through updates", () => {
   const f = fixture();
   const original = f.game.update;
@@ -476,6 +495,130 @@ void test("reserve/cap and defense boundary scenarios retain reference raw units
   assert.equal(analyze(observe(f.game), f.game, spatial).context, "economy");
 });
 
+void test("recommendation uses phase reserve thresholds and retains under attack", () => {
+  const f = fixture(32);
+  const spatial = new SpatialIndex(f.game, 1);
+  spatial.initialize();
+  f.owners[1] = 0;
+  spatial.ingest([1]);
+  f.setElapsed(100);
+
+  const snapshot = () => analyze(observe(f.game), f.game, spatial);
+  f.me.troops = () => 331;
+  assert.equal(snapshot().context, "opening");
+  assert.equal(snapshot().recommendation, "push");
+  f.me.troops = () => 330;
+  assert.equal(snapshot().recommendation, "retain");
+
+  f.setElapsed(1800);
+  f.me.troops = () => 421;
+  assert.equal(snapshot().context, "economy");
+  assert.equal(snapshot().recommendation, "push");
+  f.me.troops = () => 420;
+  assert.equal(snapshot().recommendation, "retain");
+
+  f.me.troops = () => 1000;
+  f.setIncoming(1);
+  assert.equal(snapshot().recommendation, "retain");
+});
+
+void test("stronger living frontier players force RETAIN in every phase, including allies and tribes", () => {
+  for (const phase of [
+    "opening",
+    "economy",
+    "contested",
+    "nuclear",
+    "endgame",
+  ]) {
+    const f = fixture();
+    f.owners[2] = 1;
+    f.me.troops = () => 600;
+    f.enemy.troops = () => 601;
+    f.me.isFriendly = () => phase !== "contested";
+    f.setElapsed(phase === "opening" ? 100 : 2000);
+    if (phase === "nuclear") {
+      f.units.push(unit(f.ally, UnitType.MissileSilo));
+      f.me.isFriendly = (p) => p === f.enemy;
+    }
+    if (phase === "endgame") {
+      f.me.state.inDoomsdayClock = true;
+      f.enableClock();
+    }
+    const spatial = new SpatialIndex(f.game, 1);
+    spatial.initialize();
+    const snapshot = () => analyze(observe(f.game), f.game, spatial);
+    assert.equal(snapshot().context, phase);
+    assert.equal(
+      snapshot().recommendation,
+      "retain",
+      `${phase}: stronger border`,
+    );
+
+    for (const type of [PlayerType.Human, PlayerType.Nation, PlayerType.Bot]) {
+      f.enemy.type = () => type;
+      assert.equal(snapshot().recommendation, "retain", `${phase}: ${type}`);
+    }
+    f.enemy.troops = () => 600;
+    assert.equal(snapshot().recommendation, "push", `${phase}: equal troops`);
+    f.enemy.troops = () => 601;
+    f.enemy.isAlive = () => false;
+    assert.equal(snapshot().recommendation, "push", `${phase}: dead border`);
+    f.enemy.isAlive = () => true;
+    f.owners[1] = 0;
+    spatial.ingest([1]);
+    assert.equal(
+      snapshot().recommendation,
+      "push",
+      `${phase}: non-bordering player`,
+    );
+    f.observer.dispose();
+  }
+});
+
+void test("tribe attacks do not trigger defense or override PUSH; humans and nations still do", () => {
+  const f = fixture();
+  f.me.troops = () => 1000;
+  f.enemy.type = () => PlayerType.Bot;
+  f.observer.setEnabled(true);
+  f.drain();
+  f.setIncoming(500);
+  f.game.update([]);
+  f.drain();
+  assert.equal(
+    f.observer.snapshot.incoming,
+    0,
+    "tribes are not considered under attack",
+  );
+  assert.equal(f.observer.snapshot.recommendation, "push");
+  assert.equal(f.snapshots.at(-1)?.urgent, false);
+
+  for (const type of [PlayerType.Human, PlayerType.Nation]) {
+    f.ally.type = () => type;
+    f.me.incomingAttacks = () => [
+      { attackerID: f.enemy.smallID(), troops: 500 },
+      { attackerID: f.ally.smallID(), troops: 50 },
+    ];
+    f.game.update([]);
+    f.drain();
+    assert.equal(
+      f.observer.snapshot.incoming,
+      50,
+      `${type} attacks still count`,
+    );
+    assert.equal(f.observer.snapshot.recommendation, "retain");
+  }
+  f.me.incomingAttacks = () => [{ attackerID: 99, troops: 75 }];
+  f.game.update([]);
+  f.drain();
+  assert.equal(
+    f.observer.snapshot.incoming,
+    75,
+    "unknown attackers are conservatively counted",
+  );
+  assert.equal(f.observer.snapshot.recommendation, "retain");
+  f.observer.dispose();
+});
+
 void test("control messages strictly accept only an explicit boolean opt-in", () => {
   assert.equal(
     isControl({ type: "OPENFRONT_OVERLAY_CONTROL", enabled: true }),
@@ -485,6 +628,14 @@ void test("control messages strictly accept only an explicit boolean opt-in", ()
     isControl({ type: "OPENFRONT_OVERLAY_CONTROL", enabled: false }),
     true,
   );
+  assert.equal(
+    isControl({
+      type: "OPENFRONT_OVERLAY_CONTROL",
+      enabled: true,
+      requestId: 1,
+    }),
+    true,
+  );
   for (const invalid of [
     null,
     {},
@@ -492,6 +643,11 @@ void test("control messages strictly accept only an explicit boolean opt-in", ()
     "true",
     { type: "OPENFRONT_OVERLAY_CONTROL", enabled: 1 },
     { type: "OPENFRONT_OVERLAY_CONTROL", enabled: true, intent: {} },
+    ...[0, -1, 1.5, "1", NaN].map((requestId) => ({
+      type: "OPENFRONT_OVERLAY_CONTROL",
+      enabled: true,
+      requestId,
+    })),
   ]) {
     assert.equal(isControl(invalid), false);
   }
@@ -583,10 +739,16 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
   let discoveryFailure = false;
   let interval: (() => void) | null = null;
   const listeners = new Map<string, (event: MessageEvent) => void>();
+  const animationFrames = new Map<number, (timestamp: number) => void>();
+  let animationFrameID = 0;
+  let cameraX = 0;
   const messages: {
-    status: string;
-    troops: number | null;
-    advisor: AdvisorSnapshot;
+    type: string;
+    status?: string;
+    troops?: number | null;
+    advisor?: AdvisorSnapshot;
+    controlId?: number;
+    missileSilos?: { id: number; x: number; y: number; radius: number }[];
   }[] = [];
   const errors: unknown[][] = [];
   const originalError = console.error;
@@ -606,6 +768,13 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
     },
     clearInterval: () => {
       interval = null;
+    },
+    requestAnimationFrame: (callback: (timestamp: number) => void) => {
+      animationFrames.set(++animationFrameID, callback);
+      return animationFrameID;
+    },
+    cancelAnimationFrame: (id: number) => {
+      animationFrames.delete(id);
     },
     addEventListener: (
       name: string,
@@ -628,6 +797,19 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
       querySelector: () => {
         return found
           ? {
+              transformHandler: {
+                scale: 2,
+                worldToScreenCoordinates: ({
+                  x,
+                  y,
+                }: {
+                  x: number;
+                  y: number;
+                }) => ({
+                  x: x * 10 + cameraX,
+                  y: y * 20,
+                }),
+              },
               get game() {
                 if (discoveryFailure)
                   throw new Error("fixture discovery failure");
@@ -638,17 +820,55 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
       },
     },
   });
+  let requestId = 0;
   const message = (source: unknown, origin: string, enabled: unknown) => {
     listeners.get("message")!({
       source,
       origin,
-      data: { type: "OPENFRONT_OVERLAY_CONTROL", enabled },
+      data: {
+        type: "OPENFRONT_OVERLAY_CONTROL",
+        enabled,
+        requestId: ++requestId,
+      },
     } as MessageEvent);
   };
   const stop = startBridge();
   try {
     assert.equal(messages.at(-1)?.advisor.status, "disabled");
     assert.equal(messages.at(-1)?.troops, 100);
+    f.units.push(
+      unit(f.enemy, UnitType.MissileSilo),
+      unit(f.ally, UnitType.MissileSilo),
+      unit(f.me, UnitType.MissileSilo),
+    );
+    f.me.isFriendly = (player) => player === f.ally;
+    interval!();
+    assert.deepEqual(messages.at(-1)?.missileSilos, [
+      { id: 1, x: 15, y: 10, radius: 12 },
+    ]);
+    assert.equal(
+      animationFrames.size,
+      1,
+      "enemy silo positions should be sampled on the next animation frame",
+    );
+    cameraX = 30;
+    const [frameID, frame] = animationFrames.entries().next().value!;
+    animationFrames.delete(frameID);
+    frame(16);
+    assert.equal(messages.at(-1)?.type, "OPENFRONT_OVERLAY_SILOS");
+    assert.equal(messages.at(-1)?.missileSilos?.[0].x, 45);
+    assert.equal(animationFrames.size, 1, "silo sampling stays at frame rate");
+    const markerFrameCount = messages.length;
+    const [unchangedFrameID, unchangedFrame] = animationFrames
+      .entries()
+      .next().value!;
+    animationFrames.delete(unchangedFrameID);
+    unchangedFrame(32);
+    assert.equal(
+      messages.length,
+      markerFrameCount,
+      "unchanged markers are not republished",
+    );
     f.me.troops = () => {
       throw new Error("fixture troops failure");
     };
@@ -687,6 +907,11 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
     assert.equal(f.game.update, original);
     message(fakeWindow, "https://openfront.io", true);
     assert.equal(messages.at(-1)?.advisor.status, "active");
+    assert.equal(messages.at(-1)?.controlId, requestId);
+    message(fakeWindow, "https://openfront.io", false);
+    assert.equal(f.game.update, original, "minimizing removes observation");
+    assert.equal(messages.at(-1)?.advisor.enabled, false);
+    message(fakeWindow, "https://openfront.io", true);
     const count = messages.length;
     f.game.update([]);
     f.game.update([]);
@@ -724,6 +949,39 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
     found = null;
     interval!();
     assert.equal(messages.at(-1)?.status, "waiting");
+    message(fakeWindow, "https://openfront.io", true);
+    assert.equal(messages.at(-1)?.advisor.enabled, true);
+    assert.equal(messages.at(-1)?.advisor.status, "waiting");
+    interval!();
+    assert.equal(messages.at(-1)?.advisor.enabled, true);
+    message(fakeWindow, "https://openfront.io", false);
+    found = f.game;
+    interval!();
+    assert.equal(
+      f.game.update,
+      original,
+      "cancelled loading activation stays off",
+    );
+    inGame = false;
+    interval!();
+    inGame = true;
+    found = null;
+    interval!();
+    message(fakeWindow, "https://openfront.io", true);
+    found = f.game;
+    interval!();
+    assert.equal(messages.at(-1)?.advisor.status, "active");
+    assert.notEqual(
+      f.game.update,
+      original,
+      "loading activation starts observation on discovery",
+    );
+    inGame = false;
+    interval!();
+    inGame = true;
+    interval!();
+    assert.equal(messages.at(-1)?.advisor.enabled, false);
+    assert.equal(f.game.update, original);
     stop();
     assert.equal(interval, null);
     assert.equal(listeners.size, 0);

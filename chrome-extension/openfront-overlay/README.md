@@ -1,30 +1,73 @@
 # OpenFront Overlay
 
 A standalone Chrome extension (Manifest V3). Version 0.3.0
-shows a minimized **Strategy advisor** panel at the bottom left outside a game.
-During a game it expands with an **Enable advisor for this game** toggle for
-read-only strategy analysis, refreshed every 500 ms. There is no separate troop
-badge; troop counts appear in the advisor's metrics. It runs on the normal remote
-OpenFront.io client, not a locally compiled game.
+shows a minimized advisor control at the bottom left. Each game starts with
+advice off. Click the top-right **Activate** button to expand the panel and enable
+read-only strategy analysis, refreshed every 500 ms. Click **Minimize** to collapse
+the panel and stop observation. Troop counts appear in the advisor's metrics.
+It runs on the normal remote OpenFront.io client, not a locally compiled game.
 
 ## Advisor milestone
 
-Advice is off by default for each game. Enable it after entering a game to see:
+Advice is off by default for each game. Activate it after entering a game to see:
 
-- Troop reserves: your troops, troop capacity, and capacity percentage.
-- Incoming attacks: observed committed troops and defense guidance.
 - Stronger bordering players: friendly/enemy labels and troop comparisons.
 - Current phase: opening, economy, contested, nuclear, or endgame.
+- Troop recommendation: PUSH strictly above 33% reserve in Opening or 42% in
+  other phases, provided there are no non-tribe incoming attacks and no stronger
+  living bordering players. Either condition forces RETAIN in every phase.
+  Stronger bordering players include allies and tribes; equal troop counts do
+  not trigger this rule. Comparisons use current available troops, not troops
+  already committed to outgoing attacks. Troop reserves and incoming attacks
+  inform the recommendation but are not listed in the overlay. It does not
+  display PUSH or RETAIN text; the native troop bar turns green for PUSH.
+
+After a PUSH recommendation, the green bar remains while the map index briefly
+catches up and refreshes when analysis resumes. It resets when leaving the game
+or when the advisor cannot provide valid guidance.
 
 The advisor uses the existing reference advisor's spatial and phase logic.
 Phase depends on territory, neighbors and unit evidence, not just elapsed time.
 It is heuristic guidance, not a prediction of victory or guaranteed defenses.
-You can minimize the advisor panel. Only the panel captures clicks; the rest
+Activation during loading or spawn is retained until the game view is ready.
+Leaving or replacing a game resets activation. Finished games, unsupported
+clients and advisor errors collapse the panel, retaining a compact diagnostic
+beside the disabled activation button.
+Only the panel captures clicks; the rest
 of the page remains available to the game's controls.
 
 This milestone does **not** include automated actions, expansion/build advice,
 worker eligibility queries, nuclear/transport alert cards, map focus, or
 snooze/dismiss. Nuclear evidence can still affect the phase label.
+
+## Push indicator
+
+When the activated advisor recommends PUSH, the filled portion of the native
+troop bar turns green. A thin vertical marker shows the 42% capacity point.
+The fill returns to its normal color for RETAIN, while advice is inactive, or
+outside a game. The indicators are visual only and do not perform gameplay
+actions.
+
+The client currently renders `control-panel` into its light DOM, but Lit owns
+and updates that DOM during the match. The extension watches those updates and
+reapplies the color. It locates the bar through the client's `.bg-malibu-blue`
+fill class, an internal implementation detail rather than a stable extension
+API; a client markup change may disable the indicator until the extension is
+updated.
+
+## Enemy missile silos
+
+While in a game, active missile silos owned by living players who are not the
+local player or a friendly are automatically marked with orange triangles,
+matching the silo icon's pointed silhouette. The markers follow the map camera
+and zoom, update with the game state, and do not intercept clicks or send
+gameplay actions. They remain visible while the advisor panel is minimized.
+While an enemy silo is present, its screen position is checked each animation
+frame; unchanged markers are not resent. When a silo is outside the viewport,
+its triangle moves to the nearest point on the viewport edge along the ray from
+the screen center, with a chevron pointing toward the silo. The marker layer
+stays above game overlays and does not intercept pointer input; a light and
+dark outline keeps the triangle visible against varied terrain.
 
 ## Load in Chrome
 
@@ -51,6 +94,8 @@ with the updated version; reloading only the extension does not replace them.
 
 ## Customize
 
+- See [`../CLIENT_DOM.md`](../CLIENT_DOM.md) for how to add extension-owned
+  elements to the native client DOM and handle Lit updates.
 - [`inject.js`](./inject.js) is a generated, self-contained bundle. Edit
   [`src/Main.ts`](../src/Main.ts) or [`src/Observer.ts`](../src/Observer.ts)
   and rebuild; do not edit the bundle by hand.
@@ -83,8 +128,16 @@ than the game's translation resources.
   isolated content script cannot access the element's JavaScript properties.
   Display snapshots are sent via same-origin `window.postMessage`; the content
   script validates the source, origin, and payload before rendering. The only
-  reverse control is advisor enable/disable. The shared page can spoof messages,
+  reverse control is advisor enable/disable, with an optional request ID echoed
+  as `controlId` in snapshots so older responses cannot undo newer toggles.
+  The shared page can spoof messages,
   so they must never be used for privileged actions.
+- Enemy silo positions are projected through the build menu's
+  `transformHandler` and passed as validated screen coordinates. The isolated
+  content script draws the rings in a fixed, pointer-transparent layer.
+- The PUSH indicator in [`content.js`](./content.js) colors the troop-bar fill
+  inside `control-panel` and observes Lit updates. It does not alter game state
+  or send gameplay intents.
 - The extension bundles its own analysis, using reference
   [`SpatialIndex.ts`](../../src/client/advisor/SpatialIndex.ts) and
   [`GamePhase.ts`](../../src/client/advisor/GamePhase.ts) at build time.
@@ -136,15 +189,23 @@ analysis logic and game fixtures. Verify layout and Chrome loading in the browse
 1. Check that Chrome reports no extension errors.
 2. Reload the homepage and look for the compact bottom-left panel and the
    `[OpenFront Overlay] Advisor overlay mounted.` message in DevTools.
-3. Open Solo and start a game; verify the panel expands. Return home to verify
-   it minimizes again.
+3. Open Solo and start a game; verify the control stays minimized and advice
+   stays off. Click **Activate** to expand and enable it. Return home to verify
+   it minimizes and resets.
 4. Click game controls outside the panel; they should work normally.
-5. Reload the tab; there should be exactly one `#openfront-advisor-ui` and no
-   old `#openfront-overlay-ui` troop badge.
-6. Advice must initially be off. Enable it and wait for map indexing. Compare
+5. Reload the tab; there should be exactly one `#openfront-advisor-ui`.
+6. Advice must initially be off. Activate it and wait for map indexing. Compare
    reserve capacity, incoming attacks and bordering players against the game.
-7. Disable advice, return home, and enter another game; advice must be off again.
+7. Click **Minimize**; advice must stop and the panel must collapse. Activate
+   again, return home, and enter another game; advice must be off again.
 8. Try a team game and verify friendly stronger neighbors are not labeled enemies.
+   The advisor panel should never display PUSH or RETAIN text. When the
+   recommendation is PUSH, the filled troop bar should turn green and show the
+   vertical 42% marker; RETAIN or inactive advice should restore its normal color.
+9. Activate during loading/spawn; the panel should stay expanded while waiting
+   and automatically begin analysis when ready. Minimize while waiting to cancel.
+10. Confirm no visible title, read-only legend, checkbox or “Advisor is active”
+    text remains. Finished/error states should collapse with visible diagnostics.
 
 Real remote-client gameplay verification is user-run. Automated fixture tests
 are not a substitute for checking compatibility with the deployed client.
