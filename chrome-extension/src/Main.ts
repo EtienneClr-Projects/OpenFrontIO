@@ -57,6 +57,7 @@ export function startBridge(): () => void {
   let lastSiloError: string | null = null;
   let lastSiloSignature: string | null = null;
   let hasEnemySilos = false;
+  let hasWarnedFirstEnemySilo = false;
   let discoveryError: Error | null = null;
   let requestedEnabled = false;
   let controlId = 0;
@@ -99,6 +100,7 @@ export function startBridge(): () => void {
       lastSiloError = null;
       lastSiloSignature = null;
       hasEnemySilos = false;
+      hasWarnedFirstEnemySilo = false;
       advisor = emptyAdvisor(
         requestedEnabled ? "waiting" : "disabled",
         requestedEnabled,
@@ -217,6 +219,13 @@ export function startBridge(): () => void {
       }
     }
     hasEnemySilos = missileSilos.length > 0;
+    if (hasEnemySilos && !hasWarnedFirstEnemySilo) {
+      hasWarnedFirstEnemySilo = true;
+      window.postMessage(
+        { type: "OPENFRONT_OVERLAY_FIRST_ENEMY_SILO" },
+        window.location.origin,
+      );
+    }
     return missileSilos;
   };
 

@@ -1,9 +1,10 @@
 (() => {
   const overlayId = "openfront-advisor-ui";
   const enemySiloLayerId = "openfront-enemy-silos";
+  const enemySiloWarningId = "openfront-enemy-silo-warning";
   const reserveMarkerSelector = '[data-openfront-reserve-marker="42"]';
   let state = { status: "idle", troops: null };
-  let hideEnemySilos = false;
+  let findEnemySilos = true;
   let enemySiloLayer = null;
   const enemySiloElements = new Map();
   let hudControlPanel = null;
@@ -31,7 +32,8 @@
     "advisorTitle",
     "collapseAdvisor",
     "expandAdvisor",
-    "hideEnemySilos",
+    "findEnemySilos",
+    "firstEnemySiloWarning",
     "advisor_disabled",
     "advisor_waiting",
     "advisor_indexing",
@@ -160,7 +162,7 @@
     enemySiloLayer.style.zIndex = "2147483646";
     enemySiloLayer.style.overflow = "hidden";
     enemySiloLayer.style.pointerEvents = "none";
-    enemySiloLayer.style.display = hideEnemySilos ? "none" : "block";
+    enemySiloLayer.style.display = findEnemySilos ? "block" : "none";
     node(
       "style",
       `
@@ -181,6 +183,50 @@
       enemySiloLayer,
     );
     document.body.appendChild(enemySiloLayer);
+  }
+
+  function showFirstEnemySiloWarning() {
+    let warning = document.getElementById(enemySiloWarningId);
+    if (!warning) {
+      warning = node("div");
+      warning.id = enemySiloWarningId;
+      warning.setAttribute("role", "alert");
+      warning.style.position = "fixed";
+      warning.style.left = "50%";
+      warning.style.top = "50%";
+      warning.style.transform = "translate(-50%, -50%)";
+      warning.style.zIndex = "2147483647";
+      warning.style.maxWidth = "calc(100vw - 32px)";
+      warning.style.boxSizing = "border-box";
+      warning.style.padding = "14px 22px";
+      warning.style.border = "2px solid #ff8c00";
+      warning.style.borderRadius = "12px";
+      warning.style.background = "#101827f2";
+      warning.style.color = "#fff";
+      warning.style.font = "700 20px/1.35 system-ui, sans-serif";
+      warning.style.textAlign = "center";
+      warning.style.pointerEvents = "none";
+      warning.style.boxShadow = "0 0 12px #ff8c00, 0 4px 24px #000b";
+      const style = node(
+        "style",
+        `
+        @keyframes openfront-silo-warning-fade {
+          0%, 75% { opacity: 1; scale: 1; }
+          100% { opacity: 0; scale: 0.96; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          #${enemySiloWarningId} { animation-duration: 2s !important; }
+        }
+      `,
+      );
+      document.body.appendChild(style);
+      document.body.appendChild(warning);
+    }
+    warning.textContent = advisorLabels.firstEnemySiloWarning;
+    warning.style.animation = "none";
+    void warning.offsetWidth;
+    warning.style.animation =
+      "openfront-silo-warning-fade 2.4s ease-out forwards";
   }
 
   function projectSiloMarker(marker) {
@@ -223,7 +269,7 @@
 
   function syncEnemySilos(markers) {
     if (!enemySiloLayer) return;
-    enemySiloLayer.style.display = hideEnemySilos ? "none" : "block";
+    enemySiloLayer.style.display = findEnemySilos ? "block" : "none";
     const visibleIds = new Set();
     for (const marker of markers) {
       visibleIds.add(marker.id);
@@ -360,13 +406,13 @@
     siloVisibilityLabel.className = "silo-visibility";
     const siloVisibility = node("input", undefined, siloVisibilityLabel);
     siloVisibility.type = "checkbox";
-    siloVisibility.checked = false;
-    siloVisibility.setAttribute("aria-label", advisorLabels.hideEnemySilos);
-    node("span", advisorLabels.hideEnemySilos, siloVisibilityLabel);
+    siloVisibility.checked = true;
+    siloVisibility.setAttribute("aria-label", advisorLabels.findEnemySilos);
+    node("span", advisorLabels.findEnemySilos, siloVisibilityLabel);
     siloVisibility.addEventListener("change", () => {
-      hideEnemySilos = siloVisibility.checked;
+      findEnemySilos = siloVisibility.checked;
       if (enemySiloLayer) {
-        enemySiloLayer.style.display = hideEnemySilos ? "none" : "block";
+        enemySiloLayer.style.display = findEnemySilos ? "block" : "none";
       }
     });
     const collapse = node("button", advisorLabels.collapseAdvisor, header);
@@ -536,6 +582,10 @@
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== window.location.origin)
       return;
+    if (event.data?.type === "OPENFRONT_OVERLAY_FIRST_ENEMY_SILO") {
+      if (findEnemySilos) showFirstEnemySiloWarning();
+      return;
+    }
     if (event.data?.type === "OPENFRONT_OVERLAY_SILOS") {
       if (!validEnemySilos(event.data.missileSilos)) {
         console.error("[OpenFront Overlay] Invalid enemy silo message.");
