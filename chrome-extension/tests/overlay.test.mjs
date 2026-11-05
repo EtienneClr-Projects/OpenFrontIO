@@ -250,7 +250,7 @@ for (const readyState of ["loading", "interactive", "complete"]) {
       context.document.readyState = "interactive";
       listeners[0].callback();
     }
-    assert.equal(elements.length, 2);
+    assert.equal(elements.length, 3);
     assert.equal(elements[0].id, "openfront-advisor-ui");
     assert.equal(elements[0].dataset.minimized, "true");
     assert.equal(elements[1].id, "openfront-enemy-silos");
@@ -265,7 +265,7 @@ for (const readyState of ["loading", "interactive", "complete"]) {
     assert.match(style.textContent, /bottom: calc\(16px/);
     assert.doesNotMatch(style.textContent, /right: calc/);
     runInNewContext(source, context);
-    assert.equal(elements.length, 2);
+    assert.equal(elements.length, 3);
   });
 }
 
@@ -396,6 +396,85 @@ await test("incoming boat warning appears above center and is idempotent", () =>
   assert.equal(warnings[0].attributes.role, "alert");
   assert.equal(warnings[0].textContent, messages.incomingBoatWarning.message);
   assert.equal(warnings[0].style.top, "35%");
+});
+
+await test("pirate warships are circled and the markers follow the monitor checkbox", () => {
+  const { context, elements, send } = createContext();
+  context.document.body.classList.add("in-game");
+  runInNewContext(source, context);
+  const checkboxes = descendants(elements[0]).filter(
+    (element) => element.tag === "input",
+  );
+  const monitor = checkboxes[1];
+  assert.equal(monitor.checked, true);
+  assert.equal(
+    monitor.attributes["aria-label"],
+    messages.monitorPirates.message,
+  );
+  send(
+    {},
+    {
+      data: {
+        type: "OPENFRONT_OVERLAY_PIRATE_WARSHIPS",
+        pirateWarships: [{ id: 7, x: 200, y: 150, radius: 20 }],
+      },
+    },
+  );
+  const layer = elements.find(
+    (element) => element.id === "openfront-pirate-warships",
+  );
+  assert.ok(layer);
+  assert.equal(layer.style.display, "block");
+  const ring = descendants(layer).find(
+    (element) => element.dataset.openfrontPirateWarship === "7",
+  );
+  assert.ok(ring);
+  assert.equal(ring.style.left, "200px");
+  assert.equal(ring.style.top, "150px");
+  assert.equal(ring.style.borderRadius, "50%");
+  monitor.checked = false;
+  monitor.listeners.change();
+  assert.equal(layer.style.display, "none");
+  send(
+    {},
+    {
+      data: {
+        type: "OPENFRONT_OVERLAY_PIRATE_WARSHIPS",
+        pirateWarships: [],
+      },
+    },
+  );
+  assert.equal(
+    descendants(layer).some(
+      (element) => element.dataset.openfrontPirateWarship === "7",
+    ),
+    false,
+  );
+});
+
+await test("pirate alert shows below center and respects the monitor checkbox", () => {
+  const { context, elements, send } = createContext();
+  runInNewContext(source, context);
+  send({}, { data: { type: "OPENFRONT_OVERLAY_PIRATE_ALERT" } });
+  const warning = elements.find(
+    (element) => element.id === "openfront-pirate-warning",
+  );
+  assert.ok(warning);
+  assert.equal(warning.textContent, messages.pirateWarning.message);
+  assert.equal(warning.style.top, "65%");
+
+  const other = createContext();
+  runInNewContext(source, other.context);
+  const monitor = descendants(other.elements[0]).filter(
+    (element) => element.tag === "input",
+  )[1];
+  monitor.checked = false;
+  monitor.listeners.change();
+  other.send({}, { data: { type: "OPENFRONT_OVERLAY_PIRATE_ALERT" } });
+  assert.equal(
+    other.elements.some((element) => element.id === "openfront-pirate-warning"),
+    false,
+  );
 });
 
 await test("first enemy silo warning is disabled with Find enemy silos", () => {
@@ -757,11 +836,17 @@ await test("UI keeps accessible names and renders the silo visibility checkbox",
   runInNewContext(source, context);
   send({ status: "playing", troops: 42, advisor: activeAdvisor() });
   const nodes = descendants(elements[0]);
-  assert.equal(nodes.filter((element) => element.tag === "input").length, 1);
-  assert.equal(nodes.filter((element) => element.tag === "label").length, 1);
+  assert.equal(nodes.filter((element) => element.tag === "input").length, 2);
+  assert.equal(nodes.filter((element) => element.tag === "label").length, 2);
   assert.equal(
     nodes.some(
       (element) => element.textContent === messages.findEnemySilos.message,
+    ),
+    true,
+  );
+  assert.equal(
+    nodes.some(
+      (element) => element.textContent === messages.monitorPirates.message,
     ),
     true,
   );
@@ -915,7 +1000,7 @@ await test("all phases and neighbor troop counts display correctly", () => {
         texts.some((text) => text.startsWith("Incoming attacks:")),
         false,
       );
-      assert.equal(elements.length, 2);
+      assert.equal(elements.length, 3);
     }
   }
 });

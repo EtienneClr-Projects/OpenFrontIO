@@ -51,6 +51,7 @@ export interface RemoteUnit {
   type(): UnitType;
   tile(): number;
   targetTile(): number | undefined;
+  targetUnitId?(): number | undefined;
   isActive(): boolean;
   state: { retreating: boolean };
 }

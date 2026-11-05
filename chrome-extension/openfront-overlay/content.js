@@ -1,13 +1,39 @@
 (() => {
   const overlayId = "openfront-advisor-ui";
-  const enemySiloLayerId = "openfront-enemy-silos";
   const enemySiloWarningId = "openfront-enemy-silo-warning";
   const incomingBoatWarningId = "openfront-incoming-boat-warning";
+  const pirateWarningId = "openfront-pirate-warning";
   const reserveMarkerSelector = '[data-openfront-reserve-marker="42"]';
   let state = { status: "idle", troops: null };
   let findEnemySilos = true;
-  let enemySiloLayer = null;
-  const enemySiloElements = new Map();
+  let monitorPirates = true;
+  // Each kind of map marker gets its own fixed, click-through layer.
+  const markerKinds = {
+    silo: {
+      layerId: "openfront-enemy-silos",
+      datasetKey: "openfrontEnemySilo",
+      arrowKey: "openfrontEnemySiloArrow",
+      animation: "openfront-silo-pulse",
+      color: "#ff8c00",
+      glow: "#ff5e00",
+      circle: false,
+      isEnabled: () => findEnemySilos,
+      layer: null,
+      elements: new Map(),
+    },
+    pirate: {
+      layerId: "openfront-pirate-warships",
+      datasetKey: "openfrontPirateWarship",
+      arrowKey: "openfrontPirateWarshipArrow",
+      animation: "openfront-pirate-pulse",
+      color: "#ef4444",
+      glow: "#b91c1c",
+      circle: true,
+      isEnabled: () => monitorPirates,
+      layer: null,
+      elements: new Map(),
+    },
+  };
   let hudControlPanel = null;
   let hudBodyObserver = null;
   let hudPanelObserver = null;
@@ -34,8 +60,10 @@
     "collapseAdvisor",
     "expandAdvisor",
     "findEnemySilos",
+    "monitorPirates",
     "firstEnemySiloWarning",
     "incomingBoatWarning",
+    "pirateWarning",
     "advisor_disabled",
     "advisor_waiting",
     "advisor_indexing",
@@ -130,7 +158,7 @@
     return element;
   }
 
-  function validEnemySilos(value) {
+  function validMarkers(value) {
     if (!Array.isArray(value) || value.length > 10000) return false;
     const ids = new Set();
     for (const marker of value) {
@@ -154,37 +182,39 @@
     return true;
   }
 
-  function createEnemySiloLayer() {
-    if (document.getElementById(enemySiloLayerId)) return;
-    enemySiloLayer = node("div");
-    enemySiloLayer.id = enemySiloLayerId;
-    enemySiloLayer.setAttribute("aria-hidden", "true");
-    enemySiloLayer.style.position = "fixed";
-    enemySiloLayer.style.inset = "0";
-    enemySiloLayer.style.zIndex = "2147483646";
-    enemySiloLayer.style.overflow = "hidden";
-    enemySiloLayer.style.pointerEvents = "none";
-    enemySiloLayer.style.display = findEnemySilos ? "block" : "none";
+  function createMarkerLayer(kind) {
+    const config = markerKinds[kind];
+    if (document.getElementById(config.layerId)) return;
+    const layer = node("div");
+    config.layer = layer;
+    layer.id = config.layerId;
+    layer.setAttribute("aria-hidden", "true");
+    layer.style.position = "fixed";
+    layer.style.inset = "0";
+    layer.style.zIndex = "2147483646";
+    layer.style.overflow = "hidden";
+    layer.style.pointerEvents = "none";
+    layer.style.display = config.isEnabled() ? "block" : "none";
     node(
       "style",
       `
-      @keyframes openfront-silo-pulse {
+      @keyframes ${config.animation} {
         from {
           scale: 1;
           filter: drop-shadow(0 0 1px #fff) drop-shadow(0 0 3px #111);
         }
         to {
           scale: 1.18;
-          filter: drop-shadow(0 0 3px #fff) drop-shadow(0 0 9px #ff8c00) drop-shadow(0 0 15px #ff5e00);
+          filter: drop-shadow(0 0 3px #fff) drop-shadow(0 0 9px ${config.color}) drop-shadow(0 0 15px ${config.glow});
         }
       }
       @media (prefers-reduced-motion: reduce) {
-        [data-openfront-enemy-silo] { animation: none !important; }
+        [data-${config.datasetKey.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}] { animation: none !important; }
       }
     `,
-      enemySiloLayer,
+      layer,
     );
-    document.body.appendChild(enemySiloLayer);
+    document.body.appendChild(layer);
   }
 
   function showWarning(id, text, top = "50%") {
@@ -269,28 +299,34 @@
     };
   }
 
-  function syncEnemySilos(markers) {
-    if (!enemySiloLayer) return;
-    enemySiloLayer.style.display = findEnemySilos ? "block" : "none";
+  function syncMarkers(kind, markers) {
+    const config = markerKinds[kind];
+    const layer = config.layer;
+    if (!layer) return;
+    layer.style.display = config.isEnabled() ? "block" : "none";
     const visibleIds = new Set();
     for (const marker of markers) {
       visibleIds.add(marker.id);
-      let ring = enemySiloElements.get(marker.id);
+      let ring = config.elements.get(marker.id);
       if (!ring) {
-        ring = node("span", undefined, enemySiloLayer);
-        ring.dataset.openfrontEnemySilo = String(marker.id);
+        ring = node("span", undefined, layer);
+        ring.dataset[config.datasetKey] = String(marker.id);
         ring.style.position = "absolute";
         ring.style.transform = "translate(-50%, -50%)";
         ring.style.boxSizing = "border-box";
-        ring.style.backgroundColor = "#ff8c00";
-        ring.style.clipPath = "polygon(50% 0, 100% 100%, 0 100%)";
+        if (config.circle) {
+          ring.style.border = `3px solid ${config.color}`;
+          ring.style.borderRadius = "50%";
+        } else {
+          ring.style.backgroundColor = config.color;
+          ring.style.clipPath = "polygon(50% 0, 100% 100%, 0 100%)";
+        }
         ring.style.filter =
           "drop-shadow(0 0 1px #fff) drop-shadow(0 0 3px #111)";
-        ring.style.animation =
-          "openfront-silo-pulse 900ms ease-in-out infinite alternate";
+        ring.style.animation = `${config.animation} 900ms ease-in-out infinite alternate`;
         ring.style.pointerEvents = "none";
         const arrow = node("span", undefined, ring);
-        arrow.dataset.openfrontEnemySiloArrow = "";
+        arrow.dataset[config.arrowKey] = "";
         arrow.style.position = "absolute";
         arrow.style.left = "50%";
         arrow.style.top = "50%";
@@ -298,12 +334,12 @@
         arrow.style.height = "0";
         arrow.style.borderTop = "5px solid transparent";
         arrow.style.borderBottom = "5px solid transparent";
-        arrow.style.borderLeft = "8px solid #ff8c00";
+        arrow.style.borderLeft = `8px solid ${config.color}`;
         arrow.style.filter =
           "drop-shadow(0 0 1px #fff) drop-shadow(0 0 3px #111)";
         arrow.style.pointerEvents = "none";
         ring.arrow = arrow;
-        enemySiloElements.set(marker.id, ring);
+        config.elements.set(marker.id, ring);
       }
       const position = projectSiloMarker(marker);
       ring.dataset.offscreen = String(position.offscreen);
@@ -314,10 +350,10 @@
       ring.arrow.style.display = position.offscreen ? "block" : "none";
       ring.arrow.style.transform = `translate(-50%, -50%) rotate(${position.angle}rad) translateX(${marker.radius + 6}px)`;
     }
-    for (const [id, ring] of enemySiloElements) {
+    for (const [id, ring] of config.elements) {
       if (visibleIds.has(id)) continue;
       ring.remove();
-      enemySiloElements.delete(id);
+      config.elements.delete(id);
     }
   }
 
@@ -333,6 +369,7 @@
     panel.collapse.setAttribute("aria-expanded", String(!minimized));
     panel.collapse.setAttribute("aria-pressed", String(enabled));
     panel.siloVisibilityLabel.hidden = minimized;
+    panel.pirateMonitorLabel.hidden = minimized;
     panel.body.hidden = minimized;
     const terminal = ["finished", "unsupported", "error"].includes(
       advisor.status,
@@ -413,9 +450,20 @@
     node("span", advisorLabels.findEnemySilos, siloVisibilityLabel);
     siloVisibility.addEventListener("change", () => {
       findEnemySilos = siloVisibility.checked;
-      if (enemySiloLayer) {
-        enemySiloLayer.style.display = findEnemySilos ? "block" : "none";
-      }
+      const layer = markerKinds.silo.layer;
+      if (layer) layer.style.display = findEnemySilos ? "block" : "none";
+    });
+    const pirateMonitorLabel = node("label", undefined, header);
+    pirateMonitorLabel.className = "silo-visibility";
+    const pirateMonitor = node("input", undefined, pirateMonitorLabel);
+    pirateMonitor.type = "checkbox";
+    pirateMonitor.checked = true;
+    pirateMonitor.setAttribute("aria-label", advisorLabels.monitorPirates);
+    node("span", advisorLabels.monitorPirates, pirateMonitorLabel);
+    pirateMonitor.addEventListener("change", () => {
+      monitorPirates = pirateMonitor.checked;
+      const layer = markerKinds.pirate.layer;
+      if (layer) layer.style.display = monitorPirates ? "block" : "none";
     });
     const collapse = node("button", advisorLabels.collapseAdvisor, header);
     collapse.type = "button";
@@ -427,6 +475,7 @@
       collapse,
       status,
       siloVisibilityLabel,
+      pirateMonitorLabel,
       details,
     };
     collapse.addEventListener("click", () => {
@@ -597,14 +646,33 @@
       );
       return;
     }
+    if (event.data?.type === "OPENFRONT_OVERLAY_PIRATE_ALERT") {
+      if (monitorPirates)
+        showWarning(pirateWarningId, advisorLabels.pirateWarning, "65%");
+      return;
+    }
     if (event.data?.type === "OPENFRONT_OVERLAY_SILOS") {
-      if (!validEnemySilos(event.data.missileSilos)) {
+      if (!validMarkers(event.data.missileSilos)) {
         console.error("[OpenFront Overlay] Invalid enemy silo message.");
         return;
       }
-      syncEnemySilos(
+      syncMarkers(
+        "silo",
         document.body?.classList.contains("in-game")
           ? event.data.missileSilos
+          : [],
+      );
+      return;
+    }
+    if (event.data?.type === "OPENFRONT_OVERLAY_PIRATE_WARSHIPS") {
+      if (!validMarkers(event.data.pirateWarships)) {
+        console.error("[OpenFront Overlay] Invalid pirate warship message.");
+        return;
+      }
+      syncMarkers(
+        "pirate",
+        document.body?.classList.contains("in-game")
+          ? event.data.pirateWarships
           : [],
       );
       return;
@@ -625,7 +693,7 @@
       return;
     }
     const missileSilos = event.data.missileSilos ?? [];
-    if (!validEnemySilos(missileSilos)) {
+    if (!validMarkers(missileSilos)) {
       console.error("[OpenFront Overlay] Invalid enemy silo message.");
       return;
     }
@@ -643,7 +711,7 @@
       return;
     }
     state = { status, troops };
-    syncEnemySilos(status === "idle" ? [] : missileSilos);
+    syncMarkers("silo", status === "idle" ? [] : missileSilos);
     advisor = event.data.advisor ?? defaultAdvisor;
     pendingRequest = null;
     enabled = advisor.enabled;
@@ -668,7 +736,8 @@
     }
 
     mountAdvisor();
-    createEnemySiloLayer();
+    createMarkerLayer("silo");
+    createMarkerLayer("pirate");
     startHudColorSync();
     console.info("[OpenFront Overlay] Advisor overlay mounted.");
   }
