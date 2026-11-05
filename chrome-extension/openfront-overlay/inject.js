@@ -1,6 +1,6 @@
 var OpenFrontOverlay = (function(exports) {
 	Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
-	//#region packages/engine-api/src/game/GameTypes.ts
+	//#region ../packages/engine-api/src/game/GameTypes.ts
 	var GameMode = /* @__PURE__ */ function(GameMode) {
 		GameMode["FFA"] = "Free For All";
 		GameMode["Team"] = "Team";
@@ -32,7 +32,7 @@ var OpenFrontOverlay = (function(exports) {
 		return PlayerType;
 	}({});
 	//#endregion
-	//#region src/client/advisor/GamePhase.ts
+	//#region ../src/client/advisor/GamePhase.ts
 	/** Strategic phase inferred from current evidence, not a fixed match timeline. */
 	function gamePhase(o, map, spatial) {
 		const me = o.players.find((p) => p.id === o.myID);
@@ -54,7 +54,7 @@ var OpenFrontOverlay = (function(exports) {
 		return "economy";
 	}
 	//#endregion
-	//#region src/client/advisor/SpatialIndex.ts
+	//#region ../src/client/advisor/SpatialIndex.ts
 	/** Retain frontiers, coasts and sparse build sites, not a second full map. */
 	var SpatialIndex = class {
 		constructor(map, myID) {
@@ -227,7 +227,7 @@ var OpenFrontOverlay = (function(exports) {
 		}
 	};
 	//#endregion
-	//#region chrome-extension/src/Observer.ts
+	//#region src/Observer.ts
 	var UnsupportedClient = class extends Error {};
 	function methods(value, names, label) {
 		if (!value || typeof value !== "object") throw new UnsupportedClient(`Missing ${label}.`);
@@ -620,7 +620,10 @@ var OpenFrontOverlay = (function(exports) {
 		}
 	};
 	//#endregion
-	//#region chrome-extension/src/Main.ts
+	//#region src/Main.ts
+	function postWarning(type) {
+		window.postMessage({ type }, window.location.origin);
+	}
 	function isControl(data) {
 		if (!data || typeof data !== "object") return false;
 		const value = data;
@@ -639,6 +642,8 @@ var OpenFrontOverlay = (function(exports) {
 		let inGame = false;
 		let lastError = null;
 		let lastSiloError = null;
+		let lastBoatError = null;
+		let incomingBoatIds = /* @__PURE__ */ new Set();
 		let lastSiloSignature = null;
 		let hasEnemySilos = false;
 		let hasWarnedFirstEnemySilo = false;
@@ -674,6 +679,8 @@ var OpenFrontOverlay = (function(exports) {
 				buildMenu = foundMenu;
 				inGame = playing;
 				lastSiloError = null;
+				lastBoatError = null;
+				incomingBoatIds = /* @__PURE__ */ new Set();
 				lastSiloSignature = null;
 				hasEnemySilos = false;
 				hasWarnedFirstEnemySilo = false;
@@ -744,9 +751,49 @@ var OpenFrontOverlay = (function(exports) {
 			hasEnemySilos = missileSilos.length > 0;
 			if (hasEnemySilos && !hasWarnedFirstEnemySilo) {
 				hasWarnedFirstEnemySilo = true;
-				window.postMessage({ type: "OPENFRONT_OVERLAY_FIRST_ENEMY_SILO" }, window.location.origin);
+				postWarning("OPENFRONT_OVERLAY_FIRST_ENEMY_SILO");
 			}
 			return missileSilos;
+		};
+		const warnIncomingBoats = () => {
+			if (stopped) return;
+			const current = /* @__PURE__ */ new Set();
+			let hasNew = false;
+			try {
+				if (inGame && game) {
+					const currentGame = game;
+					const player = currentGame.myPlayer?.();
+					if (player) {
+						if (typeof currentGame.units !== "function" || typeof currentGame.ownerID !== "function" || typeof player.smallID !== "function" || typeof player.isFriendly !== "function") throw new Error("Missing GameView transport data.");
+						const units = currentGame.units(UnitType.TransportShip);
+						if (!Array.isArray(units)) throw new Error("Invalid GameView units.");
+						const myID = player.smallID();
+						for (const unit of units) {
+							if (typeof unit.isActive !== "function" || typeof unit.id !== "function" || typeof unit.owner !== "function" || typeof unit.targetTile !== "function") throw new Error("Missing transport unit data.");
+							if (!unit.isActive() || unit.state?.retreating !== false) continue;
+							const owner = unit.owner();
+							if (!owner || typeof owner.smallID !== "function" || typeof owner.isAlive !== "function") throw new Error("Missing transport owner data.");
+							if (!owner.isAlive() || owner.smallID() === myID || player.isFriendly(owner)) continue;
+							const target = unit.targetTile();
+							if (target === void 0 || target === null || !Number.isSafeInteger(target) || currentGame.ownerID(target) !== myID) continue;
+							const id = unit.id();
+							if (!Number.isSafeInteger(id)) throw new Error("Invalid transport ID.");
+							current.add(id);
+							if (!incomingBoatIds.has(id)) hasNew = true;
+						}
+					}
+				}
+				lastBoatError = null;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (message !== lastBoatError) {
+					console.error("[OpenFront Overlay] Cannot read incoming transports:", error);
+					lastBoatError = message;
+				}
+				return;
+			}
+			incomingBoatIds = current;
+			if (hasNew) postWarning("OPENFRONT_OVERLAY_INCOMING_BOAT");
 		};
 		const publishSiloMarkers = (force = false) => {
 			if (stopped) return;
@@ -826,6 +873,7 @@ var OpenFrontOverlay = (function(exports) {
 			discover();
 			enableObserver();
 			observer?.poll();
+			warnIncomingBoats();
 			publish();
 			scheduleSiloFrame();
 		};

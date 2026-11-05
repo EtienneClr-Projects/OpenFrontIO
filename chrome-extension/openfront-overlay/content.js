@@ -2,6 +2,7 @@
   const overlayId = "openfront-advisor-ui";
   const enemySiloLayerId = "openfront-enemy-silos";
   const enemySiloWarningId = "openfront-enemy-silo-warning";
+  const incomingBoatWarningId = "openfront-incoming-boat-warning";
   const reserveMarkerSelector = '[data-openfront-reserve-marker="42"]';
   let state = { status: "idle", troops: null };
   let findEnemySilos = true;
@@ -34,6 +35,7 @@
     "expandAdvisor",
     "findEnemySilos",
     "firstEnemySiloWarning",
+    "incomingBoatWarning",
     "advisor_disabled",
     "advisor_waiting",
     "advisor_indexing",
@@ -185,15 +187,15 @@
     document.body.appendChild(enemySiloLayer);
   }
 
-  function showFirstEnemySiloWarning() {
-    let warning = document.getElementById(enemySiloWarningId);
+  function showWarning(id, text, top = "50%") {
+    let warning = document.getElementById(id);
     if (!warning) {
       warning = node("div");
-      warning.id = enemySiloWarningId;
+      warning.id = id;
       warning.setAttribute("role", "alert");
       warning.style.position = "fixed";
       warning.style.left = "50%";
-      warning.style.top = "50%";
+      warning.style.top = top;
       warning.style.transform = "translate(-50%, -50%)";
       warning.style.zIndex = "2147483647";
       warning.style.maxWidth = "calc(100vw - 32px)";
@@ -215,14 +217,14 @@
           100% { opacity: 0; scale: 0.96; }
         }
         @media (prefers-reduced-motion: reduce) {
-          #${enemySiloWarningId} { animation-duration: 2s !important; }
+          #${id} { animation-duration: 2s !important; }
         }
       `,
       );
       document.body.appendChild(style);
       document.body.appendChild(warning);
     }
-    warning.textContent = advisorLabels.firstEnemySiloWarning;
+    warning.textContent = text;
     warning.style.animation = "none";
     void warning.offsetWidth;
     warning.style.animation =
@@ -583,7 +585,16 @@
     if (event.source !== window || event.origin !== window.location.origin)
       return;
     if (event.data?.type === "OPENFRONT_OVERLAY_FIRST_ENEMY_SILO") {
-      if (findEnemySilos) showFirstEnemySiloWarning();
+      if (findEnemySilos)
+        showWarning(enemySiloWarningId, advisorLabels.firstEnemySiloWarning);
+      return;
+    }
+    if (event.data?.type === "OPENFRONT_OVERLAY_INCOMING_BOAT") {
+      showWarning(
+        incomingBoatWarningId,
+        advisorLabels.incomingBoatWarning,
+        "35%",
+      );
       return;
     }
     if (event.data?.type === "OPENFRONT_OVERLAY_SILOS") {

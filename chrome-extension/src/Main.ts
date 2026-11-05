@@ -22,6 +22,14 @@ export interface EnemySiloMarker {
   radius: number;
 }
 
+type WarningType =
+  | "OPENFRONT_OVERLAY_FIRST_ENEMY_SILO"
+  | "OPENFRONT_OVERLAY_INCOMING_BOAT";
+
+function postWarning(type: WarningType): void {
+  window.postMessage({ type }, window.location.origin);
+}
+
 declare global {
   interface Window {
     __openfrontOverlayBridgeStarted?: boolean;
@@ -55,6 +63,8 @@ export function startBridge(): () => void {
   let inGame = false;
   let lastError: string | null = null;
   let lastSiloError: string | null = null;
+  let lastBoatError: string | null = null;
+  let incomingBoatIds = new Set<number>();
   let lastSiloSignature: string | null = null;
   let hasEnemySilos = false;
   let hasWarnedFirstEnemySilo = false;
@@ -98,6 +108,8 @@ export function startBridge(): () => void {
       buildMenu = foundMenu;
       inGame = playing;
       lastSiloError = null;
+      lastBoatError = null;
+      incomingBoatIds = new Set();
       lastSiloSignature = null;
       hasEnemySilos = false;
       hasWarnedFirstEnemySilo = false;
@@ -221,12 +233,87 @@ export function startBridge(): () => void {
     hasEnemySilos = missileSilos.length > 0;
     if (hasEnemySilos && !hasWarnedFirstEnemySilo) {
       hasWarnedFirstEnemySilo = true;
-      window.postMessage(
-        { type: "OPENFRONT_OVERLAY_FIRST_ENEMY_SILO" },
-        window.location.origin,
-      );
+      postWarning("OPENFRONT_OVERLAY_FIRST_ENEMY_SILO");
     }
     return missileSilos;
+  };
+
+  const warnIncomingBoats = () => {
+    if (stopped) return;
+    const current = new Set<number>();
+    let hasNew = false;
+    try {
+      if (inGame && game) {
+        const currentGame = game;
+        const player = currentGame.myPlayer?.();
+        if (player) {
+          if (
+            typeof currentGame.units !== "function" ||
+            typeof currentGame.ownerID !== "function" ||
+            typeof player.smallID !== "function" ||
+            typeof player.isFriendly !== "function"
+          ) {
+            throw new Error("Missing GameView transport data.");
+          }
+          const units = currentGame.units(UnitType.TransportShip);
+          if (!Array.isArray(units)) throw new Error("Invalid GameView units.");
+          const myID = player.smallID();
+          for (const unit of units) {
+            if (
+              typeof unit.isActive !== "function" ||
+              typeof unit.id !== "function" ||
+              typeof unit.owner !== "function" ||
+              typeof unit.targetTile !== "function"
+            ) {
+              throw new Error("Missing transport unit data.");
+            }
+            if (!unit.isActive() || unit.state?.retreating !== false) continue;
+            const owner = unit.owner();
+            if (
+              !owner ||
+              typeof owner.smallID !== "function" ||
+              typeof owner.isAlive !== "function"
+            ) {
+              throw new Error("Missing transport owner data.");
+            }
+            if (
+              !owner.isAlive() ||
+              owner.smallID() === myID ||
+              player.isFriendly(owner)
+            ) {
+              continue;
+            }
+            const target = unit.targetTile();
+            if (
+              target === undefined ||
+              target === null ||
+              !Number.isSafeInteger(target) ||
+              currentGame.ownerID(target) !== myID
+            ) {
+              continue;
+            }
+            const id = unit.id();
+            if (!Number.isSafeInteger(id))
+              throw new Error("Invalid transport ID.");
+            current.add(id);
+            if (!incomingBoatIds.has(id)) hasNew = true;
+          }
+        }
+      }
+      lastBoatError = null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== lastBoatError) {
+        console.error(
+          "[OpenFront Overlay] Cannot read incoming transports:",
+          error,
+        );
+        lastBoatError = message;
+      }
+      return;
+    }
+    incomingBoatIds = current;
+    if (hasNew) postWarning("OPENFRONT_OVERLAY_INCOMING_BOAT");
   };
 
   const publishSiloMarkers = (force = false) => {
@@ -325,6 +412,7 @@ export function startBridge(): () => void {
     discover();
     enableObserver();
     observer?.poll();
+    warnIncomingBoats();
     publish();
     scheduleSiloFrame();
   };
