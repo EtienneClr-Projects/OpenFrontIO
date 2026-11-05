@@ -155,7 +155,7 @@ export function startBridge(): () => void {
   const readEnemySilos = (): EnemySiloMarker[] => {
     let missileSilos: EnemySiloMarker[] = [];
     try {
-      if (inGame && game) {
+      if (inGame && game && requestedEnabled) {
         const currentGame = game;
         if (typeof currentGame.myPlayer !== "function")
           throw new Error("Missing GameView.myPlayer().");
@@ -262,7 +262,7 @@ export function startBridge(): () => void {
     const current = new Set<number>();
     let hasNew = false;
     try {
-      if (inGame && game) {
+      if (inGame && game && requestedEnabled) {
         const currentGame = game;
         const player = currentGame.myPlayer?.();
         if (player) {
@@ -338,6 +338,12 @@ export function startBridge(): () => void {
   const trackPirates = () => {
     if (stopped) return;
     try {
+      if (!requestedEnabled) {
+        // Ignore ownership changes that happen while minimized.
+        myTradeShipIds = new Set();
+        tradeShipHunters = new Map();
+        return;
+      }
       if (!inGame || !game) return;
       const currentGame = game;
       const player = currentGame.myPlayer?.();
@@ -445,7 +451,7 @@ export function startBridge(): () => void {
   const readPirateMarkers = (): EnemySiloMarker[] => {
     const markers: EnemySiloMarker[] = [];
     try {
-      if (inGame && game && pirateCounts.size > 0) {
+      if (inGame && game && requestedEnabled && pirateCounts.size > 0) {
         const currentGame = game;
         const transform = buildMenu?.transformHandler;
         if (
@@ -524,6 +530,7 @@ export function startBridge(): () => void {
 
   const publish = () => {
     if (stopped) return;
+    publishPirateMarkers();
     let status: "idle" | "waiting" | "playing" | "unavailable" = "idle";
     let troops: number | null = null;
     try {
@@ -615,7 +622,6 @@ export function startBridge(): () => void {
     observer?.poll();
     warnIncomingBoats();
     trackPirates();
-    publishPirateMarkers();
     publish();
     scheduleSiloFrame();
   };

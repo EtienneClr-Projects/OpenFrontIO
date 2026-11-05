@@ -713,7 +713,7 @@ var OpenFrontOverlay = (function(exports) {
 		const readEnemySilos = () => {
 			let missileSilos = [];
 			try {
-				if (inGame && game) {
+				if (inGame && game && requestedEnabled) {
 					const currentGame = game;
 					if (typeof currentGame.myPlayer !== "function") throw new Error("Missing GameView.myPlayer().");
 					const player = currentGame.myPlayer();
@@ -773,7 +773,7 @@ var OpenFrontOverlay = (function(exports) {
 			const current = /* @__PURE__ */ new Set();
 			let hasNew = false;
 			try {
-				if (inGame && game) {
+				if (inGame && game && requestedEnabled) {
 					const currentGame = game;
 					const player = currentGame.myPlayer?.();
 					if (player) {
@@ -811,6 +811,11 @@ var OpenFrontOverlay = (function(exports) {
 		const trackPirates = () => {
 			if (stopped) return;
 			try {
+				if (!requestedEnabled) {
+					myTradeShipIds = /* @__PURE__ */ new Set();
+					tradeShipHunters = /* @__PURE__ */ new Map();
+					return;
+				}
 				if (!inGame || !game) return;
 				const currentGame = game;
 				const player = currentGame.myPlayer?.();
@@ -877,7 +882,7 @@ var OpenFrontOverlay = (function(exports) {
 		const readPirateMarkers = () => {
 			const markers = [];
 			try {
-				if (inGame && game && pirateCounts.size > 0) {
+				if (inGame && game && requestedEnabled && pirateCounts.size > 0) {
 					const currentGame = game;
 					const transform = buildMenu?.transformHandler;
 					if (!transform || typeof transform.worldToScreenCoordinates !== "function" || !Number.isFinite(transform.scale) || transform.scale <= 0) throw new Error("Missing BuildMenu.transformHandler.");
@@ -932,6 +937,7 @@ var OpenFrontOverlay = (function(exports) {
 		};
 		const publish = () => {
 			if (stopped) return;
+			publishPirateMarkers();
 			let status = "idle";
 			let troops = null;
 			try {
@@ -1000,7 +1006,6 @@ var OpenFrontOverlay = (function(exports) {
 			observer?.poll();
 			warnIncomingBoats();
 			trackPirates();
-			publishPirateMarkers();
 			publish();
 			scheduleSiloFrame();
 		};

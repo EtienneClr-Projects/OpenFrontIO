@@ -836,6 +836,13 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
   try {
     assert.equal(messages.at(-1)?.advisor.status, "disabled");
     assert.equal(messages.at(-1)?.troops, 100);
+    interval!();
+    assert.deepEqual(
+      messages.filter((message) => message.type === "OPENFRONT_OVERLAY_SILOS"),
+      [],
+      "silo markers are skipped while minimized",
+    );
+    message(fakeWindow, "https://openfront.io", true);
     f.units.push(
       unit(f.enemy, UnitType.MissileSilo),
       unit(f.ally, UnitType.MissileSilo),
@@ -883,6 +890,12 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
       ).length,
       1,
       "polling does not repeat the first-silo warning",
+    );
+    message(fakeWindow, "https://openfront.io", false);
+    assert.deepEqual(
+      messages.at(-1)?.missileSilos,
+      [],
+      "minimizing clears silo markers",
     );
     f.me.troops = () => {
       throw new Error("fixture troops failure");
