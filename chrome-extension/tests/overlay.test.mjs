@@ -383,6 +383,21 @@ await test("first enemy silo warning appears in the center and fades", () => {
   assert.match(warning.style.animation, /2\.4s ease-out forwards/);
 });
 
+await test("incoming boat warning appears above center and is idempotent", () => {
+  const { context, elements, send } = createContext();
+  runInNewContext(source, context);
+  send({}, { data: { type: "OPENFRONT_OVERLAY_INCOMING_BOAT" } });
+  send({}, { data: { type: "OPENFRONT_OVERLAY_INCOMING_BOAT" } });
+
+  const warnings = elements.filter(
+    (element) => element.id === "openfront-incoming-boat-warning",
+  );
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].attributes.role, "alert");
+  assert.equal(warnings[0].textContent, messages.incomingBoatWarning.message);
+  assert.equal(warnings[0].style.top, "35%");
+});
+
 await test("first enemy silo warning is disabled with Find enemy silos", () => {
   const { context, elements, send } = createContext();
   runInNewContext(source, context);
