@@ -22,9 +22,16 @@ export interface EnemySiloMarker {
   radius: number;
 }
 
+// A warship that captured more than this many of our trade ships is a pirate.
+const PIRATE_CAPTURE_THRESHOLD = 10;
+// Max manhattan distance between a stolen trade ship and the warship that
+// stole it, to cover movement between two polls.
+const PIRATE_ATTRIBUTION_RANGE = 25;
+
 type WarningType =
   | "OPENFRONT_OVERLAY_FIRST_ENEMY_SILO"
-  | "OPENFRONT_OVERLAY_INCOMING_BOAT";
+  | "OPENFRONT_OVERLAY_INCOMING_BOAT"
+  | "OPENFRONT_OVERLAY_PIRATE_ALERT";
 
 function postWarning(type: WarningType): void {
   window.postMessage({ type }, window.location.origin);
@@ -65,6 +72,12 @@ export function startBridge(): () => void {
   let lastSiloError: string | null = null;
   let lastBoatError: string | null = null;
   let incomingBoatIds = new Set<number>();
+  let lastPirateError: string | null = null;
+  let myTradeShipIds = new Set<number>();
+  let tradeShipHunters = new Map<number, number>();
+  let pirateCounts = new Map<number, number>();
+  let lastPirateSignature: string | null = "[]";
+  let hasPirates = false;
   let lastSiloSignature: string | null = null;
   let hasEnemySilos = false;
   let hasWarnedFirstEnemySilo = false;
@@ -110,6 +123,12 @@ export function startBridge(): () => void {
       lastSiloError = null;
       lastBoatError = null;
       incomingBoatIds = new Set();
+      lastPirateError = null;
+      myTradeShipIds = new Set();
+      tradeShipHunters = new Map();
+      pirateCounts = new Map();
+      lastPirateSignature = "[]";
+      hasPirates = false;
       lastSiloSignature = null;
       hasEnemySilos = false;
       hasWarnedFirstEnemySilo = false;
@@ -316,6 +335,181 @@ export function startBridge(): () => void {
     if (hasNew) postWarning("OPENFRONT_OVERLAY_INCOMING_BOAT");
   };
 
+  const trackPirates = () => {
+    if (stopped) return;
+    try {
+      if (!inGame || !game) return;
+      const currentGame = game;
+      const player = currentGame.myPlayer?.();
+      if (!player) return;
+      if (
+        typeof currentGame.units !== "function" ||
+        typeof currentGame.x !== "function" ||
+        typeof currentGame.y !== "function" ||
+        typeof player.smallID !== "function" ||
+        typeof player.isFriendly !== "function"
+      ) {
+        throw new Error("Missing GameView trade ship data.");
+      }
+      const myID = player.smallID();
+      const ships = currentGame.units(UnitType.TradeShip);
+      const warships = currentGame.units(UnitType.Warship);
+      if (!Array.isArray(ships) || !Array.isArray(warships)) {
+        throw new Error("Invalid GameView units.");
+      }
+      const activeWarships = new Map<number, (typeof warships)[number]>();
+      for (const warship of warships) {
+        if (
+          typeof warship.isActive !== "function" ||
+          typeof warship.id !== "function" ||
+          typeof warship.owner !== "function" ||
+          typeof warship.tile !== "function"
+        ) {
+          throw new Error("Missing warship data.");
+        }
+        if (warship.isActive()) activeWarships.set(warship.id(), warship);
+      }
+      const distance = (a: number, b: number) =>
+        Math.abs(currentGame.x(a) - currentGame.x(b)) +
+        Math.abs(currentGame.y(a) - currentGame.y(b));
+
+      const mine = new Set<number>();
+      const hunters = new Map<number, number>();
+      for (const ship of ships) {
+        if (
+          typeof ship.isActive !== "function" ||
+          typeof ship.id !== "function" ||
+          typeof ship.owner !== "function" ||
+          typeof ship.tile !== "function"
+        ) {
+          throw new Error("Missing trade ship data.");
+        }
+        if (!ship.isActive()) continue;
+        const shipID = ship.id();
+        const owner = ship.owner();
+        if (!owner || typeof owner.smallID !== "function") {
+          throw new Error("Missing trade ship owner data.");
+        }
+        const ownerID = owner.smallID();
+        if (ownerID === myID) {
+          mine.add(shipID);
+          continue;
+        }
+        if (!myTradeShipIds.has(shipID) || player.isFriendly(owner)) continue;
+        // One of our trade ships changed hands: find the warship that took it.
+        let pirate = activeWarships.get(tradeShipHunters.get(shipID) ?? -1);
+        if (pirate?.owner().smallID() !== ownerID) {
+          pirate = undefined;
+          let best = PIRATE_ATTRIBUTION_RANGE + 1;
+          for (const warship of activeWarships.values()) {
+            if (warship.owner().smallID() !== ownerID) continue;
+            const d = distance(warship.tile(), ship.tile());
+            if (d < best) {
+              best = d;
+              pirate = warship;
+            }
+          }
+        }
+        if (!pirate) continue;
+        const pirateID = pirate.id();
+        const count = (pirateCounts.get(pirateID) ?? 0) + 1;
+        pirateCounts.set(pirateID, count);
+        if (count === PIRATE_CAPTURE_THRESHOLD + 1) {
+          postWarning("OPENFRONT_OVERLAY_PIRATE_ALERT");
+        }
+      }
+      // Remember who is chasing each of our ships: the target is cleared the
+      // moment the ship is captured.
+      for (const warship of activeWarships.values()) {
+        const targetID = warship.targetUnitId?.();
+        if (
+          targetID !== undefined &&
+          mine.has(targetID) &&
+          warship.owner().smallID() !== myID
+        ) {
+          hunters.set(targetID, warship.id());
+        }
+      }
+      myTradeShipIds = mine;
+      tradeShipHunters = hunters;
+      lastPirateError = null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== lastPirateError) {
+        console.error("[OpenFront Overlay] Cannot track pirates:", error);
+        lastPirateError = message;
+      }
+    }
+  };
+
+  const readPirateMarkers = (): EnemySiloMarker[] => {
+    const markers: EnemySiloMarker[] = [];
+    try {
+      if (inGame && game && pirateCounts.size > 0) {
+        const currentGame = game;
+        const transform = buildMenu?.transformHandler;
+        if (
+          !transform ||
+          typeof transform.worldToScreenCoordinates !== "function" ||
+          !Number.isFinite(transform.scale) ||
+          transform.scale <= 0
+        ) {
+          throw new Error("Missing BuildMenu.transformHandler.");
+        }
+        for (const warship of currentGame.units(UnitType.Warship)) {
+          const id = warship.id();
+          if (
+            !warship.isActive() ||
+            (pirateCounts.get(id) ?? 0) <= PIRATE_CAPTURE_THRESHOLD
+          ) {
+            continue;
+          }
+          const tile = warship.tile();
+          const screen = transform.worldToScreenCoordinates({
+            x: currentGame.x(tile) + 0.5,
+            y: currentGame.y(tile) + 0.5,
+          });
+          if (
+            !Number.isSafeInteger(id) ||
+            !Number.isFinite(screen.x) ||
+            !Number.isFinite(screen.y)
+          ) {
+            throw new Error("Invalid pirate warship position.");
+          }
+          markers.push({
+            id,
+            x: screen.x,
+            y: screen.y,
+            radius: Math.max(12, Math.min(42, transform.scale * 1.7)),
+          });
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== lastPirateError) {
+        console.error(
+          "[OpenFront Overlay] Cannot read pirate warship positions:",
+          error,
+        );
+        lastPirateError = message;
+      }
+    }
+    hasPirates = markers.length > 0;
+    return markers;
+  };
+
+  const publishPirateMarkers = (force = false) => {
+    if (stopped) return;
+    const pirateWarships = readPirateMarkers();
+    const signature = JSON.stringify(pirateWarships);
+    if (!force && signature === lastPirateSignature) return;
+    lastPirateSignature = signature;
+    window.postMessage(
+      { type: "OPENFRONT_OVERLAY_PIRATE_WARSHIPS", pirateWarships },
+      window.location.origin,
+    );
+  };
+
   const publishSiloMarkers = (force = false) => {
     if (stopped) return;
     const missileSilos = readEnemySilos();
@@ -399,12 +593,19 @@ export function startBridge(): () => void {
     publish();
   };
   const scheduleSiloFrame = () => {
-    if (stopped || !inGame || !game || !hasEnemySilos || siloFrame !== null)
+    if (
+      stopped ||
+      !inGame ||
+      !game ||
+      !(hasEnemySilos || hasPirates) ||
+      siloFrame !== null
+    )
       return;
     siloFrame = window.requestAnimationFrame(() => {
       siloFrame = null;
       if (!inGame || !game || stopped) return;
       publishSiloMarkers();
+      publishPirateMarkers();
       scheduleSiloFrame();
     });
   };
@@ -413,6 +614,8 @@ export function startBridge(): () => void {
     enableObserver();
     observer?.poll();
     warnIncomingBoats();
+    trackPirates();
+    publishPirateMarkers();
     publish();
     scheduleSiloFrame();
   };

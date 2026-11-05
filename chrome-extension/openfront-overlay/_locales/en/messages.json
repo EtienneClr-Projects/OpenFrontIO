@@ -7,6 +7,10 @@
   "collapseAdvisor": { "message": "Minimize" },
   "expandAdvisor": { "message": "Activate" },
   "findEnemySilos": { "message": "Find enemy silos" },
+  "monitorPirates": { "message": "Monitor pirated tradeships" },
+  "pirateWarning": {
+    "message": "An enemy warship has stolen more than 10 of your trade ships!"
+  },
   "firstEnemySiloWarning": {
     "message": "An enemy has built their first missile silo!"
   },
