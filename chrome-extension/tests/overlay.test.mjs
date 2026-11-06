@@ -657,10 +657,22 @@ await test("advisor stays enabled while waiting for spawn", () => {
   assert.equal(elements[0].dataset.minimized, "false");
   assert.equal(button.attributes["aria-pressed"], "true");
   assert.equal(button.disabled, false);
+  const nodes = descendants(elements[0]);
   assert.ok(
-    descendants(elements[0]).some(
+    nodes.some(
       (element) => element.textContent === messages.advisor_waiting.message,
     ),
+  );
+  const style = nodes.find((element) => element.tag === "style");
+  assert.match(style.textContent, /header \{[^}]*display: grid/);
+  assert.match(
+    style.textContent,
+    /header > \[role="status"\] \{[^}]*grid-column: 1 \/ -1;[^}]*min-width: 0;/,
+  );
+  assert.match(style.textContent, /\.settings \{[^}]*flex-wrap: wrap;/);
+  assert.equal(
+    nodes.find((element) => element.className === "settings").children.length,
+    2,
   );
 });
 

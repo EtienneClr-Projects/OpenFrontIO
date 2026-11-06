@@ -421,18 +421,20 @@
       [hidden] { display: none !important; }
       :host([data-minimized="true"]) { width: auto; max-width: calc(100vw - 32px); }
       section { box-sizing: border-box; border: 1px solid #526985; border-radius: 10px; background: #0a1628f2; padding: 12px; max-height: 60vh; overflow: auto; overflow-wrap: anywhere; }
-      header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+      header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 12px; }
+      header > [role="status"] { grid-column: 1 / -1; min-width: 0; margin: 0; }
+      .settings { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
       button { background: #30445e; color: white; border: 1px solid #7085a0; border-radius: 4px; padding: 4px 7px; cursor: pointer; font: inherit; }
       button:disabled { cursor: default; opacity: 0.6; }
-      header > button { margin-left: auto; flex-shrink: 0; }
+      header > button { grid-column: 2; justify-self: end; flex-shrink: 0; }
       h3 { margin: 12px 0 4px; font-size: 14px; }
       p { margin: 6px 0; }
       ul { margin: 6px 0; padding-left: 20px; }
       li { margin: 6px 0; }
       [data-urgent="true"] { border-left: 3px solid #f6a34b; padding-left: 8px; }
       button:focus-visible { outline: 2px solid #f6cf64; outline-offset: 2px; }
-      .silo-visibility { display: flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; cursor: pointer; }
-      .silo-visibility input { accent-color: #ff8c00; }
+      .silo-visibility { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; cursor: pointer; }
+      .silo-visibility input { flex: 0 0 auto; accent-color: #ff8c00; }
     `,
       root,
     );
@@ -441,7 +443,9 @@
     const header = node("header", undefined, section);
     const status = node("p", undefined, header);
     status.setAttribute("role", "status");
-    const siloVisibilityLabel = node("label", undefined, header);
+    const settings = node("div", undefined, header);
+    settings.className = "settings";
+    const siloVisibilityLabel = node("label", undefined, settings);
     siloVisibilityLabel.className = "silo-visibility";
     const siloVisibility = node("input", undefined, siloVisibilityLabel);
     siloVisibility.type = "checkbox";
@@ -453,7 +457,7 @@
       const layer = markerKinds.silo.layer;
       if (layer) layer.style.display = findEnemySilos ? "block" : "none";
     });
-    const pirateMonitorLabel = node("label", undefined, header);
+    const pirateMonitorLabel = node("label", undefined, settings);
     pirateMonitorLabel.className = "silo-visibility";
     const pirateMonitor = node("input", undefined, pirateMonitorLabel);
     pirateMonitor.type = "checkbox";
