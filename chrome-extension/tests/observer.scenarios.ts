@@ -258,17 +258,26 @@ void test("backlog overflow rebuilds the live baseline; catchup and pause recove
   const f = fixture(10000);
   f.observer.setEnabled(true);
   f.owners[1] = 3;
+  const before = f.observer.snapshot.status;
   f.game.update(Array.from({ length: 17 }, (_, i) => i));
-  assert.equal(f.observer.snapshot.status, "catchup");
+  assert.equal(
+    f.observer.snapshot.status,
+    before === "active" ? "active" : "catchup",
+    "an established snapshot is retained during a rebuild",
+  );
   f.drain();
   assert.deepEqual(
     f.observer.snapshot.neighbors.map((p) => p.id),
     [3],
   );
   f.setCatchup(true);
-  f.game.update([]);
-  assert.equal(f.observer.snapshot.status, "catchup");
   f.owners[1] = 2;
+  f.game.update([1]);
+  assert.equal(
+    f.observer.snapshot.status,
+    "active",
+    "catchup keeps the index and the last guidance",
+  );
   f.setCatchup(false);
   f.observer.poll();
   f.drain();

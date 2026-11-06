@@ -1,6 +1,6 @@
 var OpenFrontOverlay = (function(exports) {
 	Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
-	//#region ../packages/engine-api/src/game/GameTypes.ts
+	//#region packages/engine-api/src/game/GameTypes.ts
 	var GameMode = /* @__PURE__ */ function(GameMode) {
 		GameMode["FFA"] = "Free For All";
 		GameMode["Team"] = "Team";
@@ -32,7 +32,7 @@ var OpenFrontOverlay = (function(exports) {
 		return PlayerType;
 	}({});
 	//#endregion
-	//#region ../src/client/advisor/GamePhase.ts
+	//#region src/client/advisor/GamePhase.ts
 	/** Strategic phase inferred from current evidence, not a fixed match timeline. */
 	function gamePhase(o, map, spatial) {
 		const me = o.players.find((p) => p.id === o.myID);
@@ -54,7 +54,7 @@ var OpenFrontOverlay = (function(exports) {
 		return "economy";
 	}
 	//#endregion
-	//#region ../src/client/advisor/SpatialIndex.ts
+	//#region src/client/advisor/SpatialIndex.ts
 	/** Retain frontiers, coasts and sparse build sites, not a second full map. */
 	var SpatialIndex = class {
 		constructor(map, myID) {
@@ -227,7 +227,7 @@ var OpenFrontOverlay = (function(exports) {
 		}
 	};
 	//#endregion
-	//#region src/Observer.ts
+	//#region chrome-extension/src/Observer.ts
 	var UnsupportedClient = class extends Error {};
 	function methods(value, names, label) {
 		if (!value || typeof value !== "object") throw new UnsupportedClient(`Missing ${label}.`);
@@ -556,6 +556,12 @@ var OpenFrontOverlay = (function(exports) {
 			}
 			this.work();
 		}
+		/** Once guidance is shown, transient catch-up/indexing keeps it instead of flickering. */
+		pause(status) {
+			if (this.snapshot.status === "active") return;
+			this.snapshot = emptyAdvisor(status, true);
+			this.emit();
+		}
 		work() {
 			if (!this.active) return;
 			const me = this.game.myPlayer();
@@ -579,9 +585,7 @@ var OpenFrontOverlay = (function(exports) {
 				return;
 			}
 			if (bool(this.game.isCatchingUp(), "catchup")) {
-				this.clearIndex();
-				this.snapshot = emptyAdvisor("catchup", true);
-				this.emit();
+				this.pause("catchup");
 				return;
 			}
 			if (me.smallID() !== this.myID) {
@@ -602,12 +606,11 @@ var OpenFrontOverlay = (function(exports) {
 				else break;
 			} while (this.clock.now() < deadline);
 			if (!this.spatial.ready || this.pending.size) {
-				this.snapshot = emptyAdvisor(this.rebuilding ? "catchup" : "indexing", true);
+				this.pause(this.rebuilding ? "catchup" : "indexing");
 				if (this.handle === null) this.handle = this.clock.schedule(() => {
 					this.handle = null;
 					this.guard(() => this.work());
 				});
-				this.emit();
 				return;
 			}
 			this.rebuilding = false;
@@ -620,7 +623,7 @@ var OpenFrontOverlay = (function(exports) {
 		}
 	};
 	//#endregion
-	//#region src/Main.ts
+	//#region chrome-extension/src/Main.ts
 	var PIRATE_CAPTURE_THRESHOLD = 10;
 	function postWarning(type) {
 		window.postMessage({ type }, window.location.origin);

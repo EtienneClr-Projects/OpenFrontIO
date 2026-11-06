@@ -561,6 +561,13 @@ export class GameObserver {
     this.work();
   }
 
+  /** Once guidance is shown, transient catch-up/indexing keeps it instead of flickering. */
+  private pause(status: "indexing" | "catchup"): void {
+    if (this.snapshot.status === "active") return;
+    this.snapshot = emptyAdvisor(status, true);
+    this.emit();
+  }
+
   private work(): void {
     if (!this.active) return;
     const me = this.game.myPlayer();
@@ -587,9 +594,7 @@ export class GameObserver {
       return;
     }
     if (bool(this.game.isCatchingUp(), "catchup")) {
-      this.clearIndex();
-      this.snapshot = emptyAdvisor("catchup", true);
-      this.emit();
+      this.pause("catchup");
       return;
     }
     if (me.smallID() !== this.myID) {
@@ -611,17 +616,13 @@ export class GameObserver {
       else break;
     } while (this.clock.now() < deadline);
     if (!this.spatial.ready || this.pending.size) {
-      this.snapshot = emptyAdvisor(
-        this.rebuilding ? "catchup" : "indexing",
-        true,
-      );
+      this.pause(this.rebuilding ? "catchup" : "indexing");
       if (this.handle === null) {
         this.handle = this.clock.schedule(() => {
           this.handle = null;
           this.guard(() => this.work());
         });
       }
-      this.emit();
       return;
     }
     this.rebuilding = false;
