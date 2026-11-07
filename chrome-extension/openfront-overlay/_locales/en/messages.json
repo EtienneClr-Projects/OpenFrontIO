@@ -8,8 +8,22 @@
   "expandAdvisor": { "message": "Activate" },
   "findEnemySilos": { "message": "Find enemy silos" },
   "monitorPirates": { "message": "Monitor pirated tradeships" },
+  "watchRichPlayers": { "message": "Watch rich players" },
+  "richPlayerWarning": {
+    "message": "{name} has a huge amount of gold. Beware of nukes and MIRVs!"
+  },
+  "abandonedRichPlayerWarning": {
+    "message": "{name} left the game with a huge amount of gold. Free money!"
+  },
   "pirateWarning": {
     "message": "An enemy warship has stolen more than 10 of your trade ships!"
+  },
+  "watchInactiveNeighbors": { "message": "Watch inactive neighbors" },
+  "inactiveNeighborWarning": {
+    "message": "Your neighbor {name} is inactive. Take their land!"
+  },
+  "traitorNeighborWarning": {
+    "message": "Your neighbor {name} betrayed another player. Their defense is halved: opportunity to attack!"
   },
   "firstEnemySiloWarning": {
     "message": "An enemy has built their first missile silo!"

@@ -250,7 +250,7 @@ for (const readyState of ["loading", "interactive", "complete"]) {
       context.document.readyState = "interactive";
       listeners[0].callback();
     }
-    assert.equal(elements.length, 3);
+    assert.equal(elements.length, 4);
     assert.equal(elements[0].id, "openfront-advisor-ui");
     assert.equal(elements[0].dataset.minimized, "true");
     assert.equal(elements[1].id, "openfront-enemy-silos");
@@ -265,7 +265,7 @@ for (const readyState of ["loading", "interactive", "complete"]) {
     assert.match(style.textContent, /bottom: calc\(16px/);
     assert.doesNotMatch(style.textContent, /right: calc/);
     runInNewContext(source, context);
-    assert.equal(elements.length, 3);
+    assert.equal(elements.length, 4);
   });
 }
 
@@ -477,6 +477,229 @@ await test("pirate alert shows below center and respects the monitor checkbox", 
   );
 });
 
+await test("rich player warnings name the players and respect the rich player checkbox", () => {
+  const { context, elements, send } = createContext();
+  runInNewContext(source, context);
+  send(
+    {},
+    {
+      data: {
+        type: "OPENFRONT_OVERLAY_RICH_PLAYER",
+        playerNames: ["Alice", "Bob"],
+      },
+    },
+  );
+  const rich = elements.find(
+    (element) => element.id === "openfront-rich-player-warning",
+  );
+  assert.ok(rich);
+  assert.equal(
+    rich.textContent,
+    messages.richPlayerWarning.message.replace("{name}", "Alice, Bob"),
+  );
+  assert.equal(rich.style.top, "20%");
+  send(
+    {},
+    {
+      data: {
+        type: "OPENFRONT_OVERLAY_ABANDONED_RICH_PLAYER",
+        playerNames: ["Carol"],
+      },
+    },
+  );
+  const free = elements.find(
+    (element) => element.id === "openfront-abandoned-rich-warning",
+  );
+  assert.ok(free);
+  assert.equal(
+    free.textContent,
+    messages.abandonedRichPlayerWarning.message.replace("{name}", "Carol"),
+  );
+  assert.equal(free.style.top, "50%");
+
+  const other = createContext();
+  runInNewContext(source, other.context);
+  const watch = descendants(other.elements[0]).filter(
+    (element) => element.tag === "input",
+  )[2];
+  assert.equal(watch.checked, true);
+  assert.equal(
+    watch.attributes["aria-label"],
+    messages.watchRichPlayers.message,
+  );
+  watch.checked = false;
+  watch.listeners.change();
+  other.send(
+    {},
+    {
+      data: {
+        type: "OPENFRONT_OVERLAY_ABANDONED_RICH_PLAYER",
+        playerNames: ["Carol"],
+      },
+    },
+  );
+  assert.equal(
+    other.elements.some(
+      (element) => element.id === "openfront-abandoned-rich-warning",
+    ),
+    false,
+  );
+});
+
+await test("inactive neighbor warning names players and follows its own checkbox", () => {
+  const { context, elements, send } = createContext();
+  runInNewContext(source, context);
+  send(
+    {},
+    {
+      data: {
+        type: "OPENFRONT_OVERLAY_INACTIVE_NEIGHBOR",
+        playerNames: ["Dave"],
+      },
+    },
+  );
+  const warning = elements.find(
+    (element) => element.id === "openfront-inactive-neighbor-warning",
+  );
+  assert.ok(warning);
+  assert.equal(
+    warning.textContent,
+    messages.inactiveNeighborWarning.message.replace("{name}", "Dave"),
+  );
+  assert.equal(warning.style.top, "80%");
+
+  const other = createContext();
+  runInNewContext(source, other.context);
+  const inputs = descendants(other.elements[0]).filter(
+    (element) => element.tag === "input",
+  );
+  assert.equal(
+    inputs[3].attributes["aria-label"],
+    messages.watchInactiveNeighbors.message,
+  );
+  inputs[3].checked = false;
+  inputs[3].listeners.change();
+  other.send(
+    {},
+    {
+      data: {
+        type: "OPENFRONT_OVERLAY_INACTIVE_NEIGHBOR",
+        playerNames: ["Dave"],
+      },
+    },
+  );
+  assert.equal(
+    other.elements.some(
+      (element) => element.id === "openfront-inactive-neighbor-warning",
+    ),
+    false,
+  );
+  // Rich player warnings are unaffected by the neighbor checkbox.
+  other.send(
+    {},
+    {
+      data: { type: "OPENFRONT_OVERLAY_RICH_PLAYER", playerNames: ["Dave"] },
+    },
+  );
+  assert.ok(
+    other.elements.some(
+      (element) => element.id === "openfront-rich-player-warning",
+    ),
+  );
+  // Inherited object keys are not message types.
+  other.send({}, { data: { type: "constructor" } });
+});
+
+await test("traitor neighbor warning displays validated names", () => {
+  const { context, elements, send, errors } = createContext();
+  runInNewContext(source, context);
+  send(
+    {},
+    { data: { type: "OPENFRONT_OVERLAY_TRAITOR_NEIGHBOR", playerNames: [] } },
+  );
+  assert.equal(errors.length, 1);
+  send(
+    {},
+    {
+      data: {
+        type: "OPENFRONT_OVERLAY_TRAITOR_NEIGHBOR",
+        playerNames: ["Alice", "Bob"],
+      },
+    },
+  );
+  const warning = elements.find(
+    (element) => element.id === "openfront-traitor-neighbor-warning",
+  );
+  assert.ok(warning);
+  assert.equal(
+    warning.textContent,
+    messages.traitorNeighborWarning.message.replace("{name}", "Alice, Bob"),
+  );
+});
+
+await test("invalid rich player messages are rejected", () => {
+  const { context, elements, send } = createContext();
+  runInNewContext(source, context);
+  for (const playerNames of [
+    undefined,
+    [],
+    [1],
+    ["a", "b", "c", "d", "e", "f"],
+  ])
+    send({}, { data: { type: "OPENFRONT_OVERLAY_RICH_PLAYER", playerNames } });
+  assert.equal(
+    elements.some((element) => element.id === "openfront-rich-player-warning"),
+    false,
+  );
+});
+
+await test("abandoned rich territories are circled in orange and follow the checkbox", () => {
+  const { context, elements, send } = createContext();
+  context.document.body.classList.add("in-game");
+  runInNewContext(source, context);
+  const layer = elements.find(
+    (element) => element.id === "openfront-abandoned-territories",
+  );
+  assert.ok(layer);
+  send(
+    {},
+    {
+      data: {
+        type: "OPENFRONT_OVERLAY_ABANDONED_TERRITORIES",
+        abandonedPlayers: [{ id: 3, x: 200, y: 150, radius: 300 }],
+      },
+    },
+  );
+  const ring = descendants(layer).find(
+    (element) => element.dataset.openfrontAbandonedTerritory === "3",
+  );
+  assert.ok(ring);
+  assert.equal(ring.style.borderRadius, "50%");
+  assert.match(ring.style.border, /#ff8c00/);
+  assert.equal(ring.style.width, "600px");
+  assert.equal(ring.dataset.offscreen, "false");
+  const watch = descendants(elements[0]).filter(
+    (element) => element.tag === "input",
+  )[2];
+  watch.checked = false;
+  watch.listeners.change();
+  assert.equal(layer.style.display, "none");
+  send(
+    {},
+    {
+      data: {
+        type: "OPENFRONT_OVERLAY_ABANDONED_TERRITORIES",
+        abandonedPlayers: [{ id: 3, x: 0, y: 0, radius: 401 }],
+      },
+    },
+  );
+  assert.ok(
+    descendants(layer).some(
+      (element) => element.dataset.openfrontAbandonedTerritory === "3",
+    ),
+  );
+});
+
 await test("first enemy silo warning is disabled with Find enemy silos", () => {
   const { context, elements, send } = createContext();
   runInNewContext(source, context);
@@ -672,7 +895,7 @@ await test("advisor stays enabled while waiting for spawn", () => {
   assert.match(style.textContent, /\.settings \{[^}]*flex-wrap: wrap;/);
   assert.equal(
     nodes.find((element) => element.className === "settings").children.length,
-    2,
+    4,
   );
 });
 
@@ -848,8 +1071,8 @@ await test("UI keeps accessible names and renders the silo visibility checkbox",
   runInNewContext(source, context);
   send({ status: "playing", troops: 42, advisor: activeAdvisor() });
   const nodes = descendants(elements[0]);
-  assert.equal(nodes.filter((element) => element.tag === "input").length, 2);
-  assert.equal(nodes.filter((element) => element.tag === "label").length, 2);
+  assert.equal(nodes.filter((element) => element.tag === "input").length, 4);
+  assert.equal(nodes.filter((element) => element.tag === "label").length, 4);
   assert.equal(
     nodes.some(
       (element) => element.textContent === messages.findEnemySilos.message,
@@ -1012,7 +1235,7 @@ await test("all phases and neighbor troop counts display correctly", () => {
         texts.some((text) => text.startsWith("Incoming attacks:")),
         false,
       );
-      assert.equal(elements.length, 3);
+      assert.equal(elements.length, 4);
     }
   }
 });

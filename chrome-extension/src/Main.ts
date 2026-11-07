@@ -1,6 +1,7 @@
-import { UnitType } from "@openfront/engine-api/game/GameTypes";
+import { PlayerType, UnitType } from "@openfront/engine-api/game/GameTypes";
+import { GameUpdateType } from "@openfront/engine-api/game/GameUpdates";
 import { emptyAdvisor, GameObserver, rawTroops } from "./Observer";
-import type { AdvisorSnapshot, RemoteGame } from "./Observer";
+import type { AdvisorSnapshot, RemoteGame, RemotePlayer } from "./Observer";
 
 interface RemoteTransformHandler {
   scale: number;
@@ -28,13 +29,30 @@ const PIRATE_CAPTURE_THRESHOLD = 10;
 // stole it, to cover movement between two polls.
 const PIRATE_ATTRIBUTION_RANGE = 25;
 
+// A player holding at least this much gold can afford several nukes/MIRVs.
+const RICH_GOLD_THRESHOLD = 25_000_000n;
+const MAX_WARNED_PLAYER_NAMES = 5;
+const ABANDONED_MAX_RADIUS = 400;
+
+interface RemoteRichCandidate extends RemotePlayer {
+  gold(): bigint | number;
+  nameLocation(): { x: number; y: number; size: number } | undefined;
+}
+
 type WarningType =
   | "OPENFRONT_OVERLAY_FIRST_ENEMY_SILO"
   | "OPENFRONT_OVERLAY_INCOMING_BOAT"
-  | "OPENFRONT_OVERLAY_PIRATE_ALERT";
+  | "OPENFRONT_OVERLAY_PIRATE_ALERT"
+  | "OPENFRONT_OVERLAY_RICH_PLAYER"
+  | "OPENFRONT_OVERLAY_ABANDONED_RICH_PLAYER"
+  | "OPENFRONT_OVERLAY_INACTIVE_NEIGHBOR"
+  | "OPENFRONT_OVERLAY_TRAITOR_NEIGHBOR";
 
-function postWarning(type: WarningType): void {
-  window.postMessage({ type }, window.location.origin);
+function postWarning(type: WarningType, playerNames?: string[]): void {
+  window.postMessage(
+    playerNames ? { type, playerNames } : { type },
+    window.location.origin,
+  );
 }
 
 declare global {
@@ -78,6 +96,16 @@ export function startBridge(): () => void {
   let pirateCounts = new Map<number, number>();
   let lastPirateSignature: string | null = "[]";
   let hasPirates = false;
+  let lastRichError: string | null = null;
+  let lastNeighborError: string | null = null;
+  let warnedInactiveNeighborIds = new Set<number>();
+  let pendingTraitors = new Set<number>();
+  let lastTraitorError: string | null = null;
+  let warnedRichIds = new Set<number>();
+  let warnedAbandonedIds = new Set<number>();
+  let abandonedRichPlayers: RemoteRichCandidate[] = [];
+  let lastAbandonedSignature: string | null = "[]";
+  let hasAbandoned = false;
   let lastSiloSignature: string | null = null;
   let hasEnemySilos = false;
   let hasWarnedFirstEnemySilo = false;
@@ -129,6 +157,16 @@ export function startBridge(): () => void {
       pirateCounts = new Map();
       lastPirateSignature = "[]";
       hasPirates = false;
+      lastRichError = null;
+      lastNeighborError = null;
+      warnedInactiveNeighborIds = new Set();
+      pendingTraitors = new Set();
+      lastTraitorError = null;
+      warnedRichIds = new Set();
+      warnedAbandonedIds = new Set();
+      abandonedRichPlayers = [];
+      lastAbandonedSignature = "[]";
+      hasAbandoned = false;
       lastSiloSignature = null;
       hasEnemySilos = false;
       hasWarnedFirstEnemySilo = false;
@@ -143,13 +181,123 @@ export function startBridge(): () => void {
 
   const enableObserver = () => {
     if (!game || observer || !requestedEnabled) return;
-    observer = new GameObserver(game, (snapshot, urgent) => {
-      advisor = snapshot;
-      if (!snapshot.enabled) requestedEnabled = false;
-      if (urgent) publish();
-    });
+    observer = new GameObserver(
+      game,
+      (snapshot, urgent) => {
+        advisor = snapshot;
+        if (!snapshot.enabled) requestedEnabled = false;
+        if (urgent) publish();
+      },
+      undefined,
+      undefined,
+      collectBetrayals,
+    );
     observer.setEnabled(true);
     advisor = observer.snapshot;
+  };
+
+  const collectBetrayals = (args: unknown[]) => {
+    try {
+      if (!game || !requestedEnabled || game.isCatchingUp()) return;
+      const update = args[0];
+      if (!update || typeof update !== "object" || !("updates" in update))
+        throw new Error("Missing GameView update data.");
+      const updates = update.updates;
+      if (!updates || typeof updates !== "object")
+        throw new Error("Invalid GameView updates.");
+      const breaks = (updates as Record<number, unknown>)[
+        GameUpdateType.BrokeAlliance
+      ];
+      if (breaks === undefined) {
+        lastTraitorError = null;
+        return;
+      }
+      if (!Array.isArray(breaks))
+        throw new Error("Invalid alliance break updates.");
+      if (breaks.length === 0) {
+        lastTraitorError = null;
+        return;
+      }
+      const me = game.myPlayer();
+      if (!me) return;
+      const players = new Map(game.players().map((p) => [p.smallID(), p]));
+      for (const entry of breaks) {
+        if (
+          !entry ||
+          typeof entry !== "object" ||
+          !Number.isSafeInteger(entry.traitorID) ||
+          !Number.isSafeInteger(entry.betrayedID)
+        )
+          throw new Error("Invalid alliance break update.");
+        if (entry.betrayedID === me.smallID()) continue;
+        const traitor = players.get(entry.traitorID);
+        const betrayed = players.get(entry.betrayedID);
+        if (
+          !traitor ||
+          !betrayed ||
+          typeof traitor.isTraitor !== "function" ||
+          typeof betrayed.isTraitor !== "function" ||
+          typeof betrayed.state?.isDisconnected !== "boolean"
+        )
+          throw new Error("Missing betrayal player data.");
+        // Breaking an alliance with a traitor or disconnected player does not
+        // apply a debuff, even though it produces the same event.
+        if (
+          traitor.isTraitor() &&
+          !betrayed.isTraitor() &&
+          !betrayed.state.isDisconnected
+        )
+          pendingTraitors.add(entry.traitorID);
+      }
+      lastTraitorError = null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== lastTraitorError) {
+        console.error("[OpenFront Overlay] Cannot read betrayals:", error);
+        lastTraitorError = message;
+      }
+    }
+  };
+
+  const warnTraitorNeighbors = () => {
+    if (!requestedEnabled || !game || !inGame) {
+      pendingTraitors.clear();
+      return;
+    }
+    if (pendingTraitors.size === 0) return;
+    const fronts = observer?.frontOwnerIds();
+    if (!fronts) return;
+    try {
+      const me = game.myPlayer();
+      if (!me) return;
+      const frontIds = new Set(fronts);
+      const names: string[] = [];
+      for (const candidate of game.players()) {
+        const id = candidate.smallID();
+        if (
+          pendingTraitors.has(id) &&
+          frontIds.has(id) &&
+          id !== me.smallID() &&
+          candidate.isAlive() &&
+          !me.isFriendly(candidate) &&
+          candidate.isTraitor()
+        ) {
+          names.push(candidate.displayName().slice(0, 200));
+        }
+      }
+      pendingTraitors.clear();
+      if (names.length)
+        postWarning(
+          "OPENFRONT_OVERLAY_TRAITOR_NEIGHBOR",
+          names.slice(0, MAX_WARNED_PLAYER_NAMES),
+        );
+    } catch (error) {
+      console.error(
+        "[OpenFront Overlay] Cannot read traitor neighbors:",
+        error,
+      );
+      pendingTraitors.clear();
+    }
   };
 
   const readEnemySilos = (): EnemySiloMarker[] => {
@@ -291,11 +439,13 @@ export function startBridge(): () => void {
             if (
               !owner ||
               typeof owner.smallID !== "function" ||
-              typeof owner.isAlive !== "function"
+              typeof owner.isAlive !== "function" ||
+              typeof owner.type !== "function"
             ) {
               throw new Error("Missing transport owner data.");
             }
             if (
+              owner.type() === PlayerType.Bot ||
               !owner.isAlive() ||
               owner.smallID() === myID ||
               player.isFriendly(owner)
@@ -516,6 +666,218 @@ export function startBridge(): () => void {
     );
   };
 
+  const scanRichPlayers = () => {
+    if (stopped) return;
+    const richIds = new Set<number>();
+    const abandonedIds = new Set<number>();
+    const richNames: string[] = [];
+    const abandonedNames: string[] = [];
+    const abandoned: RemoteRichCandidate[] = [];
+    try {
+      if (inGame && game && requestedEnabled) {
+        const me = game.myPlayer();
+        if (me) {
+          for (const candidate of game.players() as RemoteRichCandidate[]) {
+            if (
+              typeof candidate.gold !== "function" ||
+              typeof candidate.smallID !== "function" ||
+              typeof candidate.isAlive !== "function" ||
+              typeof candidate.type !== "function" ||
+              typeof candidate.isFriendly !== "function" ||
+              typeof candidate.displayName !== "function"
+            ) {
+              throw new Error("Missing player gold data.");
+            }
+            if (
+              !candidate.isAlive() ||
+              candidate.type() === PlayerType.Bot ||
+              candidate.smallID() === me.smallID() ||
+              me.isFriendly(candidate)
+            ) {
+              continue;
+            }
+            const gold = candidate.gold();
+            if (typeof gold !== "bigint" && typeof gold !== "number")
+              throw new Error("Invalid player gold.");
+            if (BigInt(Math.floor(Number(gold))) < RICH_GOLD_THRESHOLD) {
+              continue;
+            }
+            const id = candidate.smallID();
+            if (typeof candidate.state?.isDisconnected !== "boolean")
+              throw new Error("Missing player disconnection state.");
+            if (candidate.state.isDisconnected) {
+              abandonedIds.add(id);
+              abandoned.push(candidate);
+              if (!warnedAbandonedIds.has(id))
+                abandonedNames.push(candidate.displayName());
+            } else {
+              richIds.add(id);
+              if (!warnedRichIds.has(id))
+                richNames.push(candidate.displayName());
+            }
+          }
+        }
+      }
+      lastRichError = null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== lastRichError) {
+        console.error("[OpenFront Overlay] Cannot read player gold:", error);
+        lastRichError = message;
+      }
+      return;
+    }
+    warnedRichIds = richIds;
+    warnedAbandonedIds = abandonedIds;
+    abandonedRichPlayers = abandoned;
+    if (abandonedNames.length > 0)
+      postWarning(
+        "OPENFRONT_OVERLAY_ABANDONED_RICH_PLAYER",
+        abandonedNames.slice(0, MAX_WARNED_PLAYER_NAMES),
+      );
+    if (richNames.length > 0)
+      postWarning(
+        "OPENFRONT_OVERLAY_RICH_PLAYER",
+        richNames.slice(0, MAX_WARNED_PLAYER_NAMES),
+      );
+  };
+
+  const scanInactiveNeighbors = () => {
+    if (stopped) return;
+    const frontIds =
+      inGame && game && requestedEnabled ? observer?.frontOwnerIds() : null;
+    if (!frontIds) {
+      if (!requestedEnabled) warnedInactiveNeighborIds = new Set();
+      return;
+    }
+    const inactiveIds = new Set<number>();
+    const names: string[] = [];
+    try {
+      const me = game!.myPlayer();
+      if (me) {
+        const fronts = new Set(frontIds);
+        for (const candidate of game!.players()) {
+          if (
+            typeof candidate.smallID !== "function" ||
+            typeof candidate.isAlive !== "function" ||
+            typeof candidate.isFriendly !== "function" ||
+            typeof candidate.displayName !== "function"
+          ) {
+            throw new Error("Missing neighbor data.");
+          }
+          const id = candidate.smallID();
+          if (
+            !fronts.has(id) ||
+            id === me.smallID() ||
+            !candidate.isAlive() ||
+            me.isFriendly(candidate)
+          ) {
+            continue;
+          }
+          if (typeof candidate.state?.isDisconnected !== "boolean")
+            throw new Error("Missing player disconnection state.");
+          if (!candidate.state.isDisconnected) continue;
+          inactiveIds.add(id);
+          if (!warnedInactiveNeighborIds.has(id))
+            names.push(candidate.displayName());
+        }
+      }
+      lastNeighborError = null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== lastNeighborError) {
+        console.error(
+          "[OpenFront Overlay] Cannot read inactive neighbors:",
+          error,
+        );
+        lastNeighborError = message;
+      }
+      return;
+    }
+    warnedInactiveNeighborIds = inactiveIds;
+    if (names.length > 0)
+      postWarning(
+        "OPENFRONT_OVERLAY_INACTIVE_NEIGHBOR",
+        names.slice(0, MAX_WARNED_PLAYER_NAMES),
+      );
+  };
+
+  const readAbandonedMarkers = (): EnemySiloMarker[] => {
+    const markers: EnemySiloMarker[] = [];
+    try {
+      if (
+        inGame &&
+        game &&
+        requestedEnabled &&
+        abandonedRichPlayers.length > 0
+      ) {
+        const transform = buildMenu?.transformHandler;
+        if (
+          !transform ||
+          typeof transform.worldToScreenCoordinates !== "function" ||
+          !Number.isFinite(transform.scale) ||
+          transform.scale <= 0
+        ) {
+          throw new Error("Missing BuildMenu.transformHandler.");
+        }
+        for (const player of abandonedRichPlayers) {
+          const location = player.nameLocation?.();
+          if (!location) continue;
+          const screen = transform.worldToScreenCoordinates({
+            x: location.x + 0.5,
+            y: location.y + 0.5,
+          });
+          const id = player.smallID();
+          const tiles = player.numTilesOwned();
+          if (
+            !Number.isSafeInteger(id) ||
+            !Number.isFinite(tiles) ||
+            !Number.isFinite(screen.x) ||
+            !Number.isFinite(screen.y)
+          ) {
+            throw new Error("Invalid abandoned territory position.");
+          }
+          markers.push({
+            id,
+            x: screen.x,
+            y: screen.y,
+            // Radius of a disc covering the same area as the territory.
+            radius: Math.max(
+              16,
+              Math.min(
+                ABANDONED_MAX_RADIUS,
+                Math.sqrt(tiles / Math.PI) * transform.scale,
+              ),
+            ),
+          });
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== lastRichError) {
+        console.error(
+          "[OpenFront Overlay] Cannot read abandoned territory positions:",
+          error,
+        );
+        lastRichError = message;
+      }
+    }
+    hasAbandoned = markers.length > 0;
+    return markers;
+  };
+
+  const publishAbandonedMarkers = (force = false) => {
+    if (stopped) return;
+    const abandonedPlayers = readAbandonedMarkers();
+    const signature = JSON.stringify(abandonedPlayers);
+    if (!force && signature === lastAbandonedSignature) return;
+    lastAbandonedSignature = signature;
+    window.postMessage(
+      { type: "OPENFRONT_OVERLAY_ABANDONED_TERRITORIES", abandonedPlayers },
+      window.location.origin,
+    );
+  };
+
   const publishSiloMarkers = (force = false) => {
     if (stopped) return;
     const missileSilos = readEnemySilos();
@@ -531,6 +893,7 @@ export function startBridge(): () => void {
   const publish = () => {
     if (stopped) return;
     publishPirateMarkers();
+    publishAbandonedMarkers();
     let status: "idle" | "waiting" | "playing" | "unavailable" = "idle";
     let troops: number | null = null;
     try {
@@ -583,6 +946,7 @@ export function startBridge(): () => void {
     discover();
     controlId = event.data.requestId ?? controlId;
     requestedEnabled = inGame && !discoveryError && event.data.enabled;
+    pendingTraitors.clear();
     if (!game) {
       if (!discoveryError) {
         advisor = emptyAdvisor(
@@ -604,7 +968,7 @@ export function startBridge(): () => void {
       stopped ||
       !inGame ||
       !game ||
-      !(hasEnemySilos || hasPirates) ||
+      !(hasEnemySilos || hasPirates || hasAbandoned) ||
       siloFrame !== null
     )
       return;
@@ -613,6 +977,7 @@ export function startBridge(): () => void {
       if (!inGame || !game || stopped) return;
       publishSiloMarkers();
       publishPirateMarkers();
+      publishAbandonedMarkers();
       scheduleSiloFrame();
     });
   };
@@ -622,6 +987,9 @@ export function startBridge(): () => void {
     observer?.poll();
     warnIncomingBoats();
     trackPirates();
+    scanRichPlayers();
+    scanInactiveNeighbors();
+    warnTraitorNeighbors();
     publish();
     scheduleSiloFrame();
   };

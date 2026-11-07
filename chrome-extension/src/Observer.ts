@@ -42,6 +42,7 @@ export interface RemotePlayer {
   troops(): number;
   incomingAttacks(): { troops: number; attackerID: number }[];
   outgoingAttacks(): { troops: number }[];
+  isTraitor(): boolean;
   state: { isDisconnected: boolean; inDoomsdayClock: boolean };
 }
 
@@ -431,6 +432,7 @@ export class GameObserver {
     ) => void,
     private readonly clock: ObserverScheduler = scheduler,
     private readonly maxPending = 32768,
+    private readonly onUpdate?: (args: unknown[]) => void,
   ) {}
 
   setEnabled(enabled: boolean): void {
@@ -448,14 +450,25 @@ export class GameObserver {
       this.original = this.game.update;
       this.ownUpdate = Object.hasOwn(this.game, "update");
       const original = this.original;
-      const completed = (receiver: RemoteGame) => {
-        if (receiver === this.game && this.active)
+      const completed = (receiver: RemoteGame, args: unknown[]) => {
+        if (receiver === this.game && this.active) {
           this.guard(() => this.updated());
+          if (this.active && this.onUpdate) {
+            try {
+              this.onUpdate(args);
+            } catch (error) {
+              console.error(
+                "[OpenFront Overlay] Cannot inspect game update:",
+                error,
+              );
+            }
+          }
+        }
       };
       this.wrapper = function (this: RemoteGame, ...args: unknown[]) {
         const result = Reflect.apply(original, this, args);
         // Do not catch, transform or retry the original update's exceptions.
-        completed(this);
+        completed(this, args);
         return result;
       };
       this.game.update = this.wrapper;
@@ -477,6 +490,16 @@ export class GameObserver {
         throw new UnsupportedClient("GameView.update observer was replaced.");
       this.work();
     });
+  }
+
+  /** Owners sharing a border with us, or null while the index is not current. */
+  frontOwnerIds(): number[] | null {
+    return this.snapshot.status === "active" &&
+      this.spatial?.ready &&
+      this.pending.size === 0 &&
+      !this.game.isCatchingUp()
+      ? [...this.spatial.fronts.keys()]
+      : null;
   }
 
   private clearIndex(): void {

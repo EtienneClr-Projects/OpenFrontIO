@@ -3,6 +3,7 @@ import {
   PlayerType,
   UnitType,
 } from "@openfront/engine-api/game/GameTypes";
+import { GameUpdateType } from "@openfront/engine-api/game/GameUpdates";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AdvisorEngine } from "../../src/client/advisor/AdvisorEngine";
@@ -59,7 +60,15 @@ function fixture(size = 32) {
       calls.push({ receiver: this, args });
       if (args[0] === "throw") throw result;
       tick++;
-      changed = Array.isArray(args[0]) ? args[0] : [];
+      const input = args[0];
+      changed = Array.isArray(input)
+        ? input
+        : input &&
+            typeof input === "object" &&
+            "changed" in input &&
+            Array.isArray(input.changed)
+          ? input.changed
+          : [];
       return result;
     },
     myPlayer: () => (present ? me : null),
@@ -164,6 +173,17 @@ function fixture(size = 32) {
 }
 
 function player(id: number, troops: number): RemotePlayer {
+  return Object.assign(basePlayer(id, troops), {
+    gold: (): bigint => 0n,
+    nameLocation: (): { x: number; y: number; size: number } | undefined => ({
+      x: id * 2,
+      y: 3,
+      size: 10,
+    }),
+  });
+}
+
+function basePlayer(id: number, troops: number): RemotePlayer {
   return {
     smallID: () => id,
     displayName: () => `<b>Player ${id}</b>`,
@@ -175,6 +195,7 @@ function player(id: number, troops: number): RemotePlayer {
     troops: () => troops,
     incomingAttacks: () => [],
     outgoingAttacks: () => [],
+    isTraitor: () => false,
     state: { isDisconnected: false, inDoomsdayClock: false },
   };
 }
@@ -1025,6 +1046,389 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
   } finally {
     stop();
     console.error = originalError;
+    delete (globalThis as { window?: unknown }).window;
+    delete (globalThis as { document?: unknown }).document;
+  }
+});
+
+void test("incoming transport warning ignores tribe boats but warns for nations", () => {
+  const f = fixture();
+  let interval: (() => void) | null = null;
+  const listeners = new Map<string, (event: MessageEvent) => void>();
+  const types: string[] = [];
+  const fakeWindow = {
+    location: { origin: "https://openfront.io" },
+    postMessage: (message: { type: string }) => {
+      types.push(message.type);
+    },
+    setInterval: (callback: () => void) => {
+      interval = callback;
+      return 1;
+    },
+    clearInterval: () => {
+      interval = null;
+    },
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame: () => {},
+    addEventListener: (
+      name: string,
+      callback: (event: MessageEvent) => void,
+    ) => {
+      listeners.set(name, callback);
+    },
+    removeEventListener: (name: string) => {
+      listeners.delete(name);
+    },
+  };
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: fakeWindow,
+  });
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      body: { classList: { contains: () => true } },
+      querySelector: () => ({ game: f.game }),
+    },
+  });
+  const stop = startBridge();
+  const warnings = () =>
+    types.filter((type) => type === "OPENFRONT_OVERLAY_INCOMING_BOAT").length;
+  try {
+    listeners.get("message")!({
+      source: fakeWindow,
+      origin: "https://openfront.io",
+      data: {
+        type: "OPENFRONT_OVERLAY_CONTROL",
+        enabled: true,
+        requestId: 1,
+      },
+    } as MessageEvent);
+    f.owners[2] = f.me.smallID();
+    f.units.push(unit(f.enemy, UnitType.TransportShip, 2));
+    f.enemy.type = () => PlayerType.Bot;
+    interval!();
+    assert.equal(warnings(), 0, "tribe transports are ignored");
+    f.enemy.type = () => PlayerType.Nation;
+    interval!();
+    assert.equal(warnings(), 1, "nation transports warn");
+  } finally {
+    stop();
+    delete (globalThis as { window?: unknown }).window;
+    delete (globalThis as { document?: unknown }).document;
+  }
+});
+
+void test("rich players warn once, and abandoned rich players are circled", () => {
+  const f = fixture();
+  const rich = f.enemy as RemotePlayer & { gold: () => bigint };
+  let interval: (() => void) | null = null;
+  const listeners = new Map<string, (event: MessageEvent) => void>();
+  const sent: { type: string; [key: string]: unknown }[] = [];
+  const fakeWindow = {
+    location: { origin: "https://openfront.io" },
+    postMessage: (message: { type: string }) => {
+      sent.push(message);
+    },
+    setInterval: (callback: () => void) => {
+      interval = callback;
+      return 1;
+    },
+    clearInterval: () => {
+      interval = null;
+    },
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame: () => {},
+    addEventListener: (
+      name: string,
+      callback: (event: MessageEvent) => void,
+    ) => {
+      listeners.set(name, callback);
+    },
+    removeEventListener: (name: string) => {
+      listeners.delete(name);
+    },
+  };
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: fakeWindow,
+  });
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      body: { classList: { contains: () => true } },
+      querySelector: () => ({
+        game: f.game,
+        transformHandler: {
+          scale: 2,
+          worldToScreenCoordinates: (cell: { x: number; y: number }) => ({
+            x: cell.x * 10,
+            y: cell.y * 10,
+          }),
+        },
+      }),
+    },
+  });
+  const stop = startBridge();
+  const count = (type: string) =>
+    sent.filter((message) => message.type === type).length;
+  const RICH = "OPENFRONT_OVERLAY_RICH_PLAYER";
+  const ABANDONED = "OPENFRONT_OVERLAY_ABANDONED_RICH_PLAYER";
+  const MARKERS = "OPENFRONT_OVERLAY_ABANDONED_TERRITORIES";
+  const lastMarkers = () =>
+    (sent.filter((message) => message.type === MARKERS).at(-1)
+      ?.abandonedPlayers ?? []) as {
+      id: number;
+      x: number;
+      y: number;
+      radius: number;
+    }[];
+  try {
+    interval!();
+    rich.gold = () => 30_000_000n;
+    interval!();
+    assert.equal(count(RICH), 0, "nothing is reported while advice is off");
+    listeners.get("message")!({
+      source: fakeWindow,
+      origin: "https://openfront.io",
+      data: { type: "OPENFRONT_OVERLAY_CONTROL", enabled: true, requestId: 1 },
+    } as MessageEvent);
+    rich.gold = () => 24_999_999n;
+    interval!();
+    assert.equal(count(RICH), 0, "below the threshold is ignored");
+    rich.gold = () => 25_000_000n;
+    interval!();
+    interval!();
+    assert.equal(count(RICH), 1, "warns once at the threshold");
+    assert.deepEqual(sent.filter((m) => m.type === RICH)[0].playerNames, [
+      "<b>Player 2</b>",
+    ]);
+    assert.equal(count(ABANDONED), 0);
+    assert.equal(lastMarkers().length, 0, "connected players are not circled");
+
+    rich.state.isDisconnected = true;
+    interval!();
+    interval!();
+    assert.equal(count(ABANDONED), 1, "abandoned gold warns once");
+    assert.equal(count(RICH), 1);
+    assert.deepEqual(lastMarkers(), [
+      { id: 2, x: 45, y: 35, radius: Math.max(16, Math.sqrt(1 / Math.PI) * 2) },
+    ]);
+
+    rich.gold = () => 1n;
+    interval!();
+    assert.equal(lastMarkers().length, 0, "spent gold removes the circle");
+    rich.gold = () => 30_000_000n;
+    interval!();
+    assert.equal(count(ABANDONED), 2, "re-arms after dropping below");
+
+    const friend = f.ally as RemotePlayer & { gold: () => bigint };
+    friend.gold = () => 99_000_000n;
+    f.me.isFriendly = (other) => other === f.ally;
+    interval!();
+    assert.equal(count(RICH), 1, "friendly players are ignored");
+    assert.equal(count(ABANDONED), 2, "friendly players are ignored");
+  } finally {
+    stop();
+    delete (globalThis as { window?: unknown }).window;
+    delete (globalThis as { document?: unknown }).document;
+  }
+});
+
+void test("betraying neighbors warn only for eligible observed alliance breaks", () => {
+  const f = fixture();
+  let interval: (() => void) | null = null;
+  const listeners = new Map<string, (event: MessageEvent) => void>();
+  const sent: { type: string; [key: string]: unknown }[] = [];
+  const fakeWindow = {
+    location: { origin: "https://openfront.io" },
+    postMessage: (message: { type: string }) => sent.push(message),
+    setInterval: (callback: () => void) => {
+      interval = callback;
+      return 1;
+    },
+    clearInterval: () => {},
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame: () => {},
+    addEventListener: (name: string, callback: (event: MessageEvent) => void) =>
+      listeners.set(name, callback),
+    removeEventListener: (name: string) => listeners.delete(name),
+  };
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: fakeWindow,
+  });
+
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      body: { classList: { contains: () => true } },
+      querySelector: () => ({ game: f.game }),
+    },
+  });
+  const stop = startBridge();
+  const alerts = () =>
+    sent.filter(
+      (message) => message.type === "OPENFRONT_OVERLAY_TRAITOR_NEIGHBOR",
+    );
+  const enable = (enabled: boolean) =>
+    listeners.get("message")!({
+      source: fakeWindow,
+      origin: "https://openfront.io",
+      data: { type: "OPENFRONT_OVERLAY_CONTROL", enabled },
+    } as MessageEvent);
+  const betray = (betrayedID: number, traitorID = 2) =>
+    f.game.update({
+      updates: {
+        [GameUpdateType.BrokeAlliance]: [{ traitorID, betrayedID }],
+      },
+    });
+  try {
+    f.enemy.isTraitor = () => true;
+    betray(3);
+    interval!();
+    assert.equal(
+      alerts().length,
+      0,
+      "inactive advisor does not observe events",
+    );
+    enable(true);
+    interval!();
+    betray(3);
+    f.game.update({ updates: {} });
+    interval!();
+    interval!();
+    assert.deepEqual(alerts()[0].playerNames, ["<b>Player 2</b>"]);
+    assert.equal(
+      alerts().length,
+      1,
+      "events survive later updates between polls",
+    );
+    betray(1);
+    interval!();
+    assert.equal(alerts().length, 1, "betrayals against us are excluded");
+    f.ally.state.isDisconnected = true;
+    betray(3);
+    f.ally.state.isDisconnected = false;
+    f.ally.isTraitor = () => true;
+    betray(3);
+    f.ally.isTraitor = () => false;
+    f.enemy.isTraitor = () => false;
+    betray(3);
+    interval!();
+    assert.equal(alerts().length, 1, "breaks without a debuff are excluded");
+    f.enemy.isTraitor = () => true;
+    f.me.isFriendly = (other) => other === f.enemy;
+    betray(3);
+    interval!();
+    assert.equal(alerts().length, 1, "friendly neighbors are excluded");
+    f.me.isFriendly = () => false;
+    f.setCatchup(true);
+    betray(3);
+    f.setCatchup(false);
+    interval!();
+    assert.equal(alerts().length, 1, "catchup events are excluded");
+    betray(3);
+    enable(false);
+    enable(true);
+    interval!();
+    assert.equal(alerts().length, 1, "disabling clears pending warnings");
+    f.owners[1] = 0;
+    f.game.update({ updates: {}, changed: [1] });
+    interval!();
+    betray(3);
+    interval!();
+    assert.equal(alerts().length, 1, "non-neighbors are excluded");
+    f.owners[1] = 2;
+    f.game.update({ updates: {}, changed: [1] });
+    interval!();
+    betray(3);
+    interval!();
+    assert.equal(alerts().length, 2, "a later betrayal can alert again");
+  } finally {
+    stop();
+    delete (globalThis as { window?: unknown }).window;
+    delete (globalThis as { document?: unknown }).document;
+  }
+});
+
+void test("disconnected players bordering us raise one inactive neighbor alert", () => {
+  const f = fixture();
+  let interval: (() => void) | null = null;
+  const listeners = new Map<string, (event: MessageEvent) => void>();
+  const sent: { type: string; [key: string]: unknown }[] = [];
+  const fakeWindow = {
+    location: { origin: "https://openfront.io" },
+    postMessage: (message: { type: string }) => {
+      sent.push(message);
+    },
+    setInterval: (callback: () => void) => {
+      interval = callback;
+      return 1;
+    },
+    clearInterval: () => {
+      interval = null;
+    },
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame: () => {},
+    addEventListener: (
+      name: string,
+      callback: (event: MessageEvent) => void,
+    ) => {
+      listeners.set(name, callback);
+    },
+    removeEventListener: (name: string) => {
+      listeners.delete(name);
+    },
+  };
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: fakeWindow,
+  });
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      body: { classList: { contains: () => true } },
+      querySelector: () => ({ game: f.game }),
+    },
+  });
+  const stop = startBridge();
+  const TYPE = "OPENFRONT_OVERLAY_INACTIVE_NEIGHBOR";
+  const alerts = () => sent.filter((message) => message.type === TYPE);
+  try {
+    f.enemy.state.isDisconnected = true;
+    interval!();
+    assert.equal(alerts().length, 0, "nothing is reported while advice is off");
+    listeners.get("message")!({
+      source: fakeWindow,
+      origin: "https://openfront.io",
+      data: { type: "OPENFRONT_OVERLAY_CONTROL", enabled: true, requestId: 1 },
+    } as MessageEvent);
+    interval!();
+    interval!();
+    assert.equal(alerts().length, 1, "alerts once");
+    assert.deepEqual(alerts()[0].playerNames, ["<b>Player 2</b>"]);
+
+    f.enemy.state.isDisconnected = false;
+    interval!();
+    f.enemy.state.isDisconnected = true;
+    interval!();
+    assert.equal(alerts().length, 2, "re-arms after reconnecting");
+
+    f.owners[1] = 0;
+    f.game.update({ updates: {}, changed: [1] });
+    f.enemy.state.isDisconnected = false;
+    interval!();
+    f.enemy.state.isDisconnected = true;
+    f.ally.state.isDisconnected = true;
+    interval!();
+    assert.equal(
+      alerts().length,
+      2,
+      "players not on our frontier (or friendly) are ignored",
+    );
+  } finally {
+    stop();
     delete (globalThis as { window?: unknown }).window;
     delete (globalThis as { document?: unknown }).document;
   }

@@ -73,6 +73,35 @@ dark outline keeps the triangle visible against varied terrain.
 The first time a living enemy silo is detected in a game, a centered warning
 appears for about two seconds and then fades away.
 
+## Rich players
+
+While the advisor is active, living non-bot players who are not friendly and
+hold at least 25M gold are reported (one warning per player until their gold
+drops below the threshold). **Watch rich players** (checked by default) gates
+both behaviours:
+
+- A connected player gets a warning to beware of nukes and MIRVs.
+- A player who has left the game (disconnected) with that much gold is free
+  money: a centered warning appears and their territory is circled in orange.
+  The circle is centered on the player's name label and sized from their
+  territory; when off-screen, a chevron points toward it.
+
+## Inactive neighbors
+
+While the advisor is active, a warning appears when a living, non-friendly
+player who shares a frontier with you has disconnected (left the game), so
+their land can be taken. It is shown once per player, and again if they
+reconnect and leave anew. **Watch inactive neighbors** (checked by default)
+turns it off.
+
+## Betraying neighbors
+
+While the advisor is active, a warning names living, non-friendly bordering
+players who betray someone other than you and receive the traitor defense
+debuff. Their defense is halved for 30 seconds, creating an opportunity to
+attack. The alert is based on observed alliance-break updates and may be missed
+while the advisor is inactive or the game is catching up.
+
 ## Load in Chrome
 
 1. Open `chrome://extensions/`.

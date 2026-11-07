@@ -32,6 +32,35 @@ var OpenFrontOverlay = (function(exports) {
 		return PlayerType;
 	}({});
 	//#endregion
+	//#region packages/engine-api/src/game/GameUpdates.ts
+	var GameUpdateType = /* @__PURE__ */ function(GameUpdateType) {
+		GameUpdateType[GameUpdateType["Tile"] = 0] = "Tile";
+		GameUpdateType[GameUpdateType["Unit"] = 1] = "Unit";
+		GameUpdateType[GameUpdateType["Player"] = 2] = "Player";
+		GameUpdateType[GameUpdateType["DisplayEvent"] = 3] = "DisplayEvent";
+		GameUpdateType[GameUpdateType["DisplayChatEvent"] = 4] = "DisplayChatEvent";
+		GameUpdateType[GameUpdateType["AllianceRequest"] = 5] = "AllianceRequest";
+		GameUpdateType[GameUpdateType["AllianceRequestReply"] = 6] = "AllianceRequestReply";
+		GameUpdateType[GameUpdateType["BrokeAlliance"] = 7] = "BrokeAlliance";
+		GameUpdateType[GameUpdateType["AllianceExpired"] = 8] = "AllianceExpired";
+		GameUpdateType[GameUpdateType["AllianceExtension"] = 9] = "AllianceExtension";
+		GameUpdateType[GameUpdateType["TargetPlayer"] = 10] = "TargetPlayer";
+		GameUpdateType[GameUpdateType["Emoji"] = 11] = "Emoji";
+		GameUpdateType[GameUpdateType["Win"] = 12] = "Win";
+		GameUpdateType[GameUpdateType["Hash"] = 13] = "Hash";
+		GameUpdateType[GameUpdateType["UnitIncoming"] = 14] = "UnitIncoming";
+		GameUpdateType[GameUpdateType["BonusEvent"] = 15] = "BonusEvent";
+		GameUpdateType[GameUpdateType["RailroadDestructionEvent"] = 16] = "RailroadDestructionEvent";
+		GameUpdateType[GameUpdateType["RailroadConstructionEvent"] = 17] = "RailroadConstructionEvent";
+		GameUpdateType[GameUpdateType["RailroadSnapEvent"] = 18] = "RailroadSnapEvent";
+		GameUpdateType[GameUpdateType["ConquestEvent"] = 19] = "ConquestEvent";
+		GameUpdateType[GameUpdateType["EmbargoEvent"] = 20] = "EmbargoEvent";
+		GameUpdateType[GameUpdateType["SpawnPhaseEnd"] = 21] = "SpawnPhaseEnd";
+		GameUpdateType[GameUpdateType["GamePaused"] = 22] = "GamePaused";
+		GameUpdateType[GameUpdateType["DonateEvent"] = 23] = "DonateEvent";
+		return GameUpdateType;
+	}({});
+	//#endregion
 	//#region src/client/advisor/GamePhase.ts
 	/** Strategic phase inferred from current evidence, not a fixed match timeline. */
 	function gamePhase(o, map, spatial) {
@@ -438,11 +467,12 @@ var OpenFrontOverlay = (function(exports) {
 	var observers = /* @__PURE__ */ new WeakMap();
 	/** Instance-local, read-only observer. Only the display snapshot escapes it. */
 	var GameObserver = class {
-		constructor(game, onSnapshot, clock = scheduler, maxPending = 32768) {
+		constructor(game, onSnapshot, clock = scheduler, maxPending = 32768, onUpdate) {
 			this.game = game;
 			this.onSnapshot = onSnapshot;
 			this.clock = clock;
 			this.maxPending = maxPending;
+			this.onUpdate = onUpdate;
 			this.snapshot = emptyAdvisor();
 			this.spatial = null;
 			this.pending = /* @__PURE__ */ new Set();
@@ -471,12 +501,19 @@ var OpenFrontOverlay = (function(exports) {
 				this.original = this.game.update;
 				this.ownUpdate = Object.hasOwn(this.game, "update");
 				const original = this.original;
-				const completed = (receiver) => {
-					if (receiver === this.game && this.active) this.guard(() => this.updated());
+				const completed = (receiver, args) => {
+					if (receiver === this.game && this.active) {
+						this.guard(() => this.updated());
+						if (this.active && this.onUpdate) try {
+							this.onUpdate(args);
+						} catch (error) {
+							console.error("[OpenFront Overlay] Cannot inspect game update:", error);
+						}
+					}
 				};
 				this.wrapper = function(...args) {
 					const result = Reflect.apply(original, this, args);
-					completed(this);
+					completed(this, args);
 					return result;
 				};
 				this.game.update = this.wrapper;
@@ -495,6 +532,10 @@ var OpenFrontOverlay = (function(exports) {
 				if (this.game.update !== this.wrapper) throw new UnsupportedClient("GameView.update observer was replaced.");
 				this.work();
 			});
+		}
+		/** Owners sharing a border with us, or null while the index is not current. */
+		frontOwnerIds() {
+			return this.snapshot.status === "active" && this.spatial?.ready && this.pending.size === 0 && !this.game.isCatchingUp() ? [...this.spatial.fronts.keys()] : null;
 		}
 		clearIndex() {
 			this.spatial = null;
@@ -625,8 +666,14 @@ var OpenFrontOverlay = (function(exports) {
 	//#endregion
 	//#region chrome-extension/src/Main.ts
 	var PIRATE_CAPTURE_THRESHOLD = 10;
-	function postWarning(type) {
-		window.postMessage({ type }, window.location.origin);
+	var RICH_GOLD_THRESHOLD = 25000000n;
+	var MAX_WARNED_PLAYER_NAMES = 5;
+	var ABANDONED_MAX_RADIUS = 400;
+	function postWarning(type, playerNames) {
+		window.postMessage(playerNames ? {
+			type,
+			playerNames
+		} : { type }, window.location.origin);
 	}
 	function isControl(data) {
 		if (!data || typeof data !== "object") return false;
@@ -654,6 +701,16 @@ var OpenFrontOverlay = (function(exports) {
 		let pirateCounts = /* @__PURE__ */ new Map();
 		let lastPirateSignature = "[]";
 		let hasPirates = false;
+		let lastRichError = null;
+		let lastNeighborError = null;
+		let warnedInactiveNeighborIds = /* @__PURE__ */ new Set();
+		let pendingTraitors = /* @__PURE__ */ new Set();
+		let lastTraitorError = null;
+		let warnedRichIds = /* @__PURE__ */ new Set();
+		let warnedAbandonedIds = /* @__PURE__ */ new Set();
+		let abandonedRichPlayers = [];
+		let lastAbandonedSignature = "[]";
+		let hasAbandoned = false;
 		let lastSiloSignature = null;
 		let hasEnemySilos = false;
 		let hasWarnedFirstEnemySilo = false;
@@ -697,6 +754,16 @@ var OpenFrontOverlay = (function(exports) {
 				pirateCounts = /* @__PURE__ */ new Map();
 				lastPirateSignature = "[]";
 				hasPirates = false;
+				lastRichError = null;
+				lastNeighborError = null;
+				warnedInactiveNeighborIds = /* @__PURE__ */ new Set();
+				pendingTraitors = /* @__PURE__ */ new Set();
+				lastTraitorError = null;
+				warnedRichIds = /* @__PURE__ */ new Set();
+				warnedAbandonedIds = /* @__PURE__ */ new Set();
+				abandonedRichPlayers = [];
+				lastAbandonedSignature = "[]";
+				hasAbandoned = false;
 				lastSiloSignature = null;
 				hasEnemySilos = false;
 				hasWarnedFirstEnemySilo = false;
@@ -709,9 +776,70 @@ var OpenFrontOverlay = (function(exports) {
 				advisor = snapshot;
 				if (!snapshot.enabled) requestedEnabled = false;
 				if (urgent) publish();
-			});
+			}, void 0, void 0, collectBetrayals);
 			observer.setEnabled(true);
 			advisor = observer.snapshot;
+		};
+		const collectBetrayals = (args) => {
+			try {
+				if (!game || !requestedEnabled || game.isCatchingUp()) return;
+				const update = args[0];
+				if (!update || typeof update !== "object" || !("updates" in update)) throw new Error("Missing GameView update data.");
+				const updates = update.updates;
+				if (!updates || typeof updates !== "object") throw new Error("Invalid GameView updates.");
+				const breaks = updates[GameUpdateType.BrokeAlliance];
+				if (breaks === void 0) {
+					lastTraitorError = null;
+					return;
+				}
+				if (!Array.isArray(breaks)) throw new Error("Invalid alliance break updates.");
+				if (breaks.length === 0) {
+					lastTraitorError = null;
+					return;
+				}
+				const me = game.myPlayer();
+				if (!me) return;
+				const players = new Map(game.players().map((p) => [p.smallID(), p]));
+				for (const entry of breaks) {
+					if (!entry || typeof entry !== "object" || !Number.isSafeInteger(entry.traitorID) || !Number.isSafeInteger(entry.betrayedID)) throw new Error("Invalid alliance break update.");
+					if (entry.betrayedID === me.smallID()) continue;
+					const traitor = players.get(entry.traitorID);
+					const betrayed = players.get(entry.betrayedID);
+					if (!traitor || !betrayed || typeof traitor.isTraitor !== "function" || typeof betrayed.isTraitor !== "function" || typeof betrayed.state?.isDisconnected !== "boolean") throw new Error("Missing betrayal player data.");
+					if (traitor.isTraitor() && !betrayed.isTraitor() && !betrayed.state.isDisconnected) pendingTraitors.add(entry.traitorID);
+				}
+				lastTraitorError = null;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (message !== lastTraitorError) {
+					console.error("[OpenFront Overlay] Cannot read betrayals:", error);
+					lastTraitorError = message;
+				}
+			}
+		};
+		const warnTraitorNeighbors = () => {
+			if (!requestedEnabled || !game || !inGame) {
+				pendingTraitors.clear();
+				return;
+			}
+			if (pendingTraitors.size === 0) return;
+			const fronts = observer?.frontOwnerIds();
+			if (!fronts) return;
+			try {
+				const me = game.myPlayer();
+				if (!me) return;
+				const frontIds = new Set(fronts);
+				const names = [];
+				for (const candidate of game.players()) {
+					const id = candidate.smallID();
+					if (pendingTraitors.has(id) && frontIds.has(id) && id !== me.smallID() && candidate.isAlive() && !me.isFriendly(candidate) && candidate.isTraitor()) names.push(candidate.displayName().slice(0, 200));
+				}
+				pendingTraitors.clear();
+				if (names.length) postWarning("OPENFRONT_OVERLAY_TRAITOR_NEIGHBOR", names.slice(0, MAX_WARNED_PLAYER_NAMES));
+			} catch (error) {
+				console.error("[OpenFront Overlay] Cannot read traitor neighbors:", error);
+				pendingTraitors.clear();
+			}
 		};
 		const readEnemySilos = () => {
 			let missileSilos = [];
@@ -788,8 +916,8 @@ var OpenFrontOverlay = (function(exports) {
 							if (typeof unit.isActive !== "function" || typeof unit.id !== "function" || typeof unit.owner !== "function" || typeof unit.targetTile !== "function") throw new Error("Missing transport unit data.");
 							if (!unit.isActive() || unit.state?.retreating !== false) continue;
 							const owner = unit.owner();
-							if (!owner || typeof owner.smallID !== "function" || typeof owner.isAlive !== "function") throw new Error("Missing transport owner data.");
-							if (!owner.isAlive() || owner.smallID() === myID || player.isFriendly(owner)) continue;
+							if (!owner || typeof owner.smallID !== "function" || typeof owner.isAlive !== "function" || typeof owner.type !== "function") throw new Error("Missing transport owner data.");
+							if (owner.type() === PlayerType.Bot || !owner.isAlive() || owner.smallID() === myID || player.isFriendly(owner)) continue;
 							const target = unit.targetTile();
 							if (target === void 0 || target === null || !Number.isSafeInteger(target) || currentGame.ownerID(target) !== myID) continue;
 							const id = unit.id();
@@ -927,6 +1055,129 @@ var OpenFrontOverlay = (function(exports) {
 				pirateWarships
 			}, window.location.origin);
 		};
+		const scanRichPlayers = () => {
+			if (stopped) return;
+			const richIds = /* @__PURE__ */ new Set();
+			const abandonedIds = /* @__PURE__ */ new Set();
+			const richNames = [];
+			const abandonedNames = [];
+			const abandoned = [];
+			try {
+				if (inGame && game && requestedEnabled) {
+					const me = game.myPlayer();
+					if (me) for (const candidate of game.players()) {
+						if (typeof candidate.gold !== "function" || typeof candidate.smallID !== "function" || typeof candidate.isAlive !== "function" || typeof candidate.type !== "function" || typeof candidate.isFriendly !== "function" || typeof candidate.displayName !== "function") throw new Error("Missing player gold data.");
+						if (!candidate.isAlive() || candidate.type() === PlayerType.Bot || candidate.smallID() === me.smallID() || me.isFriendly(candidate)) continue;
+						const gold = candidate.gold();
+						if (typeof gold !== "bigint" && typeof gold !== "number") throw new Error("Invalid player gold.");
+						if (BigInt(Math.floor(Number(gold))) < RICH_GOLD_THRESHOLD) continue;
+						const id = candidate.smallID();
+						if (typeof candidate.state?.isDisconnected !== "boolean") throw new Error("Missing player disconnection state.");
+						if (candidate.state.isDisconnected) {
+							abandonedIds.add(id);
+							abandoned.push(candidate);
+							if (!warnedAbandonedIds.has(id)) abandonedNames.push(candidate.displayName());
+						} else {
+							richIds.add(id);
+							if (!warnedRichIds.has(id)) richNames.push(candidate.displayName());
+						}
+					}
+				}
+				lastRichError = null;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (message !== lastRichError) {
+					console.error("[OpenFront Overlay] Cannot read player gold:", error);
+					lastRichError = message;
+				}
+				return;
+			}
+			warnedRichIds = richIds;
+			warnedAbandonedIds = abandonedIds;
+			abandonedRichPlayers = abandoned;
+			if (abandonedNames.length > 0) postWarning("OPENFRONT_OVERLAY_ABANDONED_RICH_PLAYER", abandonedNames.slice(0, MAX_WARNED_PLAYER_NAMES));
+			if (richNames.length > 0) postWarning("OPENFRONT_OVERLAY_RICH_PLAYER", richNames.slice(0, MAX_WARNED_PLAYER_NAMES));
+		};
+		const scanInactiveNeighbors = () => {
+			if (stopped) return;
+			const frontIds = inGame && game && requestedEnabled ? observer?.frontOwnerIds() : null;
+			if (!frontIds) {
+				if (!requestedEnabled) warnedInactiveNeighborIds = /* @__PURE__ */ new Set();
+				return;
+			}
+			const inactiveIds = /* @__PURE__ */ new Set();
+			const names = [];
+			try {
+				const me = game.myPlayer();
+				if (me) {
+					const fronts = new Set(frontIds);
+					for (const candidate of game.players()) {
+						if (typeof candidate.smallID !== "function" || typeof candidate.isAlive !== "function" || typeof candidate.isFriendly !== "function" || typeof candidate.displayName !== "function") throw new Error("Missing neighbor data.");
+						const id = candidate.smallID();
+						if (!fronts.has(id) || id === me.smallID() || !candidate.isAlive() || me.isFriendly(candidate)) continue;
+						if (typeof candidate.state?.isDisconnected !== "boolean") throw new Error("Missing player disconnection state.");
+						if (!candidate.state.isDisconnected) continue;
+						inactiveIds.add(id);
+						if (!warnedInactiveNeighborIds.has(id)) names.push(candidate.displayName());
+					}
+				}
+				lastNeighborError = null;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (message !== lastNeighborError) {
+					console.error("[OpenFront Overlay] Cannot read inactive neighbors:", error);
+					lastNeighborError = message;
+				}
+				return;
+			}
+			warnedInactiveNeighborIds = inactiveIds;
+			if (names.length > 0) postWarning("OPENFRONT_OVERLAY_INACTIVE_NEIGHBOR", names.slice(0, MAX_WARNED_PLAYER_NAMES));
+		};
+		const readAbandonedMarkers = () => {
+			const markers = [];
+			try {
+				if (inGame && game && requestedEnabled && abandonedRichPlayers.length > 0) {
+					const transform = buildMenu?.transformHandler;
+					if (!transform || typeof transform.worldToScreenCoordinates !== "function" || !Number.isFinite(transform.scale) || transform.scale <= 0) throw new Error("Missing BuildMenu.transformHandler.");
+					for (const player of abandonedRichPlayers) {
+						const location = player.nameLocation?.();
+						if (!location) continue;
+						const screen = transform.worldToScreenCoordinates({
+							x: location.x + .5,
+							y: location.y + .5
+						});
+						const id = player.smallID();
+						const tiles = player.numTilesOwned();
+						if (!Number.isSafeInteger(id) || !Number.isFinite(tiles) || !Number.isFinite(screen.x) || !Number.isFinite(screen.y)) throw new Error("Invalid abandoned territory position.");
+						markers.push({
+							id,
+							x: screen.x,
+							y: screen.y,
+							radius: Math.max(16, Math.min(ABANDONED_MAX_RADIUS, Math.sqrt(tiles / Math.PI) * transform.scale))
+						});
+					}
+				}
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (message !== lastRichError) {
+					console.error("[OpenFront Overlay] Cannot read abandoned territory positions:", error);
+					lastRichError = message;
+				}
+			}
+			hasAbandoned = markers.length > 0;
+			return markers;
+		};
+		const publishAbandonedMarkers = (force = false) => {
+			if (stopped) return;
+			const abandonedPlayers = readAbandonedMarkers();
+			const signature = JSON.stringify(abandonedPlayers);
+			if (!force && signature === lastAbandonedSignature) return;
+			lastAbandonedSignature = signature;
+			window.postMessage({
+				type: "OPENFRONT_OVERLAY_ABANDONED_TERRITORIES",
+				abandonedPlayers
+			}, window.location.origin);
+		};
 		const publishSiloMarkers = (force = false) => {
 			if (stopped) return;
 			const missileSilos = readEnemySilos();
@@ -941,6 +1192,7 @@ var OpenFrontOverlay = (function(exports) {
 		const publish = () => {
 			if (stopped) return;
 			publishPirateMarkers();
+			publishAbandonedMarkers();
 			let status = "idle";
 			let troops = null;
 			try {
@@ -982,6 +1234,7 @@ var OpenFrontOverlay = (function(exports) {
 			discover();
 			controlId = event.data.requestId ?? controlId;
 			requestedEnabled = inGame && !discoveryError && event.data.enabled;
+			pendingTraitors.clear();
 			if (!game) {
 				if (!discoveryError) advisor = emptyAdvisor(requestedEnabled ? "waiting" : "disabled", requestedEnabled);
 				publish();
@@ -994,12 +1247,13 @@ var OpenFrontOverlay = (function(exports) {
 			publish();
 		};
 		const scheduleSiloFrame = () => {
-			if (stopped || !inGame || !game || !(hasEnemySilos || hasPirates) || siloFrame !== null) return;
+			if (stopped || !inGame || !game || !(hasEnemySilos || hasPirates || hasAbandoned) || siloFrame !== null) return;
 			siloFrame = window.requestAnimationFrame(() => {
 				siloFrame = null;
 				if (!inGame || !game || stopped) return;
 				publishSiloMarkers();
 				publishPirateMarkers();
+				publishAbandonedMarkers();
 				scheduleSiloFrame();
 			});
 		};
@@ -1009,6 +1263,9 @@ var OpenFrontOverlay = (function(exports) {
 			observer?.poll();
 			warnIncomingBoats();
 			trackPirates();
+			scanRichPlayers();
+			scanInactiveNeighbors();
+			warnTraitorNeighbors();
 			publish();
 			scheduleSiloFrame();
 		};
