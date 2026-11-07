@@ -12,6 +12,19 @@ await build({
       name: "reference-game-enums",
       enforce: "pre",
       transform(source, id) {
+        if (id === `${root}packages/engine-api/src/game/GameUpdates.ts`) {
+          const parsed = parseSync(id, source);
+          if (parsed.errors.length)
+            throw new Error("Cannot parse GameUpdates.");
+          const entry = parsed.program.body.find(
+            (node) =>
+              node.type === "ExportNamedDeclaration" &&
+              node.declaration?.type === "TSEnumDeclaration" &&
+              node.declaration.id.name === "GameUpdateType",
+          );
+          if (!entry) throw new Error("Reference game update enum changed.");
+          return { code: source.slice(entry.start, entry.end), map: null };
+        }
         if (id !== `${root}packages/engine-api/src/game/GameTypes.ts`) return;
         // This module also initializes the map catalog. Extract the exact
         // reference enums at build time instead of shipping unrelated catalogs.
@@ -41,6 +54,7 @@ await build({
           `${root}src/client/advisor/GamePhase.ts`,
           `${root}src/client/advisor/SpatialIndex.ts`,
           `${root}packages/engine-api/src/game/GameTypes.ts`,
+          `${root}packages/engine-api/src/game/GameUpdates.ts`,
         ]);
         for (const output of Object.values(bundle)) {
           if (output.type !== "chunk")

@@ -3,10 +3,16 @@
   const enemySiloWarningId = "openfront-enemy-silo-warning";
   const incomingBoatWarningId = "openfront-incoming-boat-warning";
   const pirateWarningId = "openfront-pirate-warning";
+  const richPlayerWarningId = "openfront-rich-player-warning";
+  const abandonedRichWarningId = "openfront-abandoned-rich-warning";
+  const inactiveNeighborWarningId = "openfront-inactive-neighbor-warning";
+  const traitorNeighborWarningId = "openfront-traitor-neighbor-warning";
   const reserveMarkerSelector = '[data-openfront-reserve-marker="42"]';
   let state = { status: "idle", troops: null };
   let findEnemySilos = true;
   let monitorPirates = true;
+  let watchRichPlayers = true;
+  let watchInactiveNeighbors = true;
   // Each kind of map marker gets its own fixed, click-through layer.
   const markerKinds = {
     silo: {
@@ -32,6 +38,46 @@
       isEnabled: () => monitorPirates,
       layer: null,
       elements: new Map(),
+    },
+    abandoned: {
+      layerId: "openfront-abandoned-territories",
+      datasetKey: "openfrontAbandonedTerritory",
+      arrowKey: "openfrontAbandonedTerritoryArrow",
+      animation: "openfront-abandoned-pulse",
+      color: "#ff8c00",
+      glow: "#ff5e00",
+      circle: true,
+      maxRadius: 400,
+      isEnabled: () => watchRichPlayers,
+      layer: null,
+      elements: new Map(),
+    },
+  };
+  // Warnings naming players: message type -> label, layer id and position.
+  const playerWarnings = {
+    OPENFRONT_OVERLAY_RICH_PLAYER: {
+      id: richPlayerWarningId,
+      label: "richPlayerWarning",
+      top: "20%",
+      isEnabled: () => watchRichPlayers,
+    },
+    OPENFRONT_OVERLAY_ABANDONED_RICH_PLAYER: {
+      id: abandonedRichWarningId,
+      label: "abandonedRichPlayerWarning",
+      top: "50%",
+      isEnabled: () => watchRichPlayers,
+    },
+    OPENFRONT_OVERLAY_INACTIVE_NEIGHBOR: {
+      id: inactiveNeighborWarningId,
+      label: "inactiveNeighborWarning",
+      top: "80%",
+      isEnabled: () => watchInactiveNeighbors,
+    },
+    OPENFRONT_OVERLAY_TRAITOR_NEIGHBOR: {
+      id: traitorNeighborWarningId,
+      label: "traitorNeighborWarning",
+      top: "35%",
+      isEnabled: () => true,
     },
   };
   let hudControlPanel = null;
@@ -61,6 +107,12 @@
     "expandAdvisor",
     "findEnemySilos",
     "monitorPirates",
+    "watchRichPlayers",
+    "richPlayerWarning",
+    "abandonedRichPlayerWarning",
+    "watchInactiveNeighbors",
+    "inactiveNeighborWarning",
+    "traitorNeighborWarning",
     "firstEnemySiloWarning",
     "incomingBoatWarning",
     "pirateWarning",
@@ -158,7 +210,7 @@
     return element;
   }
 
-  function validMarkers(value) {
+  function validMarkers(value, maxRadius = 100) {
     if (!Array.isArray(value) || value.length > 10000) return false;
     const ids = new Set();
     for (const marker of value) {
@@ -173,7 +225,7 @@
         Math.abs(marker.y) > 100000 ||
         !Number.isFinite(marker.radius) ||
         marker.radius < 4 ||
-        marker.radius > 100
+        marker.radius > maxRadius
       ) {
         return false;
       }
@@ -273,7 +325,8 @@
       return { x: marker.x, y: marker.y, offscreen: false, angle: 0 };
     }
 
-    const margin = marker.radius + 4;
+    // Large territory circles must not push their off-screen arrow to the center.
+    const margin = Math.min(marker.radius, 42) + 4;
     const offscreen =
       marker.x < margin ||
       marker.x > width - margin ||
@@ -370,6 +423,8 @@
     panel.collapse.setAttribute("aria-pressed", String(enabled));
     panel.siloVisibilityLabel.hidden = minimized;
     panel.pirateMonitorLabel.hidden = minimized;
+    panel.richWatchLabel.hidden = minimized;
+    panel.inactiveWatchLabel.hidden = minimized;
     panel.body.hidden = minimized;
     const terminal = ["finished", "unsupported", "error"].includes(
       advisor.status,
@@ -469,6 +524,31 @@
       const layer = markerKinds.pirate.layer;
       if (layer) layer.style.display = monitorPirates ? "block" : "none";
     });
+    const richWatchLabel = node("label", undefined, settings);
+    richWatchLabel.className = "silo-visibility";
+    const richWatch = node("input", undefined, richWatchLabel);
+    richWatch.type = "checkbox";
+    richWatch.checked = true;
+    richWatch.setAttribute("aria-label", advisorLabels.watchRichPlayers);
+    node("span", advisorLabels.watchRichPlayers, richWatchLabel);
+    richWatch.addEventListener("change", () => {
+      watchRichPlayers = richWatch.checked;
+      const layer = markerKinds.abandoned.layer;
+      if (layer) layer.style.display = watchRichPlayers ? "block" : "none";
+    });
+    const inactiveWatchLabel = node("label", undefined, settings);
+    inactiveWatchLabel.className = "silo-visibility";
+    const inactiveWatch = node("input", undefined, inactiveWatchLabel);
+    inactiveWatch.type = "checkbox";
+    inactiveWatch.checked = true;
+    inactiveWatch.setAttribute(
+      "aria-label",
+      advisorLabels.watchInactiveNeighbors,
+    );
+    node("span", advisorLabels.watchInactiveNeighbors, inactiveWatchLabel);
+    inactiveWatch.addEventListener("change", () => {
+      watchInactiveNeighbors = inactiveWatch.checked;
+    });
     const collapse = node("button", advisorLabels.collapseAdvisor, header);
     collapse.type = "button";
     const body = node("div", undefined, section);
@@ -480,6 +560,8 @@
       status,
       siloVisibilityLabel,
       pirateMonitorLabel,
+      richWatchLabel,
+      inactiveWatchLabel,
       details,
     };
     collapse.addEventListener("click", () => {
@@ -655,6 +737,48 @@
         showWarning(pirateWarningId, advisorLabels.pirateWarning, "65%");
       return;
     }
+    const playerWarning = Object.hasOwn(playerWarnings, event.data?.type)
+      ? playerWarnings[event.data.type]
+      : null;
+    if (playerWarning) {
+      const names = event.data.playerNames;
+      if (
+        !Array.isArray(names) ||
+        names.length === 0 ||
+        names.length > 5 ||
+        !names.every((name) => typeof name === "string" && name.length <= 200)
+      ) {
+        console.error("[OpenFront Overlay] Invalid player warning message.");
+        return;
+      }
+      if (!playerWarning.isEnabled()) return;
+      showWarning(
+        playerWarning.id,
+        advisorLabels[playerWarning.label].replace("{name}", names.join(", ")),
+        playerWarning.top,
+      );
+      return;
+    }
+    if (event.data?.type === "OPENFRONT_OVERLAY_ABANDONED_TERRITORIES") {
+      if (
+        !validMarkers(
+          event.data.abandonedPlayers,
+          markerKinds.abandoned.maxRadius,
+        )
+      ) {
+        console.error(
+          "[OpenFront Overlay] Invalid abandoned territory message.",
+        );
+        return;
+      }
+      syncMarkers(
+        "abandoned",
+        document.body?.classList.contains("in-game")
+          ? event.data.abandonedPlayers
+          : [],
+      );
+      return;
+    }
     if (event.data?.type === "OPENFRONT_OVERLAY_SILOS") {
       if (!validMarkers(event.data.missileSilos)) {
         console.error("[OpenFront Overlay] Invalid enemy silo message.");
@@ -742,6 +866,7 @@
     mountAdvisor();
     createMarkerLayer("silo");
     createMarkerLayer("pirate");
+    createMarkerLayer("abandoned");
     startHudColorSync();
     console.info("[OpenFront Overlay] Advisor overlay mounted.");
   }
