@@ -466,11 +466,25 @@ void test("friendly/disconnected/team parity, strict strength boundary and alive
   assert.equal(snapshot().neighbors[0].friendly, false);
   f.me.team = f.enemy.team = () => "red";
   assert.equal(
-    snapshot().neighbors[0].friendly,
-    true,
-    "disconnected teammate remains same-team friendly",
+    snapshot().neighbors.length,
+    0,
+    "disconnected teammates are excluded",
   );
   assert.equal(snapshot().context, "economy");
+  f.enemy.state.isDisconnected = false;
+  assert.equal(
+    snapshot().neighbors.length,
+    0,
+    "connected teammates are excluded",
+  );
+  f.enemy.team = () => "blue";
+  assert.equal(
+    snapshot().neighbors[0].friendly,
+    true,
+    "allies on other teams remain listed",
+  );
+  f.me.team = f.enemy.team = () => null;
+  assert.equal(snapshot().neighbors.length, 1, "null teams are not teammates");
   f.enemy.troops = () => 100;
   assert.equal(snapshot().neighbors.length, 0, "equal troops are not stronger");
   f.enemy.troops = () => 101;
@@ -588,6 +602,14 @@ void test("stronger living frontier players force RETAIN in every phase, includi
       f.enemy.type = () => type;
       assert.equal(snapshot().recommendation, "retain", `${phase}: ${type}`);
     }
+    f.me.team = f.enemy.team = () => "red";
+    assert.equal(
+      snapshot().recommendation,
+      "push",
+      `${phase}: teammate is not a threat`,
+    );
+    assert.equal(snapshot().neighbors.length, 0);
+    f.me.team = f.enemy.team = () => null;
     f.enemy.troops = () => 600;
     assert.equal(snapshot().recommendation, "push", `${phase}: equal troops`);
     f.enemy.troops = () => 601;
@@ -1175,6 +1197,13 @@ void test("rich players warn once, and abandoned rich players are circled", () =
   const RICH = "OPENFRONT_OVERLAY_RICH_PLAYER";
   const ABANDONED = "OPENFRONT_OVERLAY_ABANDONED_RICH_PLAYER";
   const MARKERS = "OPENFRONT_OVERLAY_ABANDONED_TERRITORIES";
+  const assertRichList = (players: { id: number; name: string }[]) =>
+    assert.deepEqual(
+      sent
+        .filter((message) => message.type === "OPENFRONT_OVERLAY_STATE")
+        .at(-1)?.playerLists,
+      { richPlayers: players, traitorNeighbors: [] },
+    );
   const lastMarkers = () =>
     (sent.filter((message) => message.type === MARKERS).at(-1)
       ?.abandonedPlayers ?? []) as {
@@ -1188,6 +1217,7 @@ void test("rich players warn once, and abandoned rich players are circled", () =
     rich.gold = () => 30_000_000n;
     interval!();
     assert.equal(count(RICH), 0, "nothing is reported while advice is off");
+    assertRichList([]);
     listeners.get("message")!({
       source: fakeWindow,
       origin: "https://openfront.io",
@@ -1196,6 +1226,7 @@ void test("rich players warn once, and abandoned rich players are circled", () =
     rich.gold = () => 24_999_999n;
     interval!();
     assert.equal(count(RICH), 0, "below the threshold is ignored");
+    assertRichList([]);
     rich.gold = () => 25_000_000n;
     interval!();
     interval!();
@@ -1205,12 +1236,14 @@ void test("rich players warn once, and abandoned rich players are circled", () =
     ]);
     assert.equal(count(ABANDONED), 0);
     assert.equal(lastMarkers().length, 0, "connected players are not circled");
+    assertRichList([{ id: 2, name: "<b>Player 2</b>" }]);
 
     rich.state.isDisconnected = true;
     interval!();
     interval!();
     assert.equal(count(ABANDONED), 1, "abandoned gold warns once");
     assert.equal(count(RICH), 1);
+    assertRichList([{ id: 2, name: "<b>Player 2</b>" }]);
     assert.deepEqual(lastMarkers(), [
       { id: 2, x: 45, y: 35, radius: Math.max(16, Math.sqrt(1 / Math.PI) * 2) },
     ]);
@@ -1218,6 +1251,7 @@ void test("rich players warn once, and abandoned rich players are circled", () =
     rich.gold = () => 1n;
     interval!();
     assert.equal(lastMarkers().length, 0, "spent gold removes the circle");
+    assertRichList([]);
     rich.gold = () => 30_000_000n;
     interval!();
     assert.equal(count(ABANDONED), 2, "re-arms after dropping below");
@@ -1225,9 +1259,71 @@ void test("rich players warn once, and abandoned rich players are circled", () =
     const friend = f.ally as RemotePlayer & { gold: () => bigint };
     friend.gold = () => 99_000_000n;
     f.me.isFriendly = (other) => other === f.ally;
+    f.me.team = friend.team = () => "red";
     interval!();
-    assert.equal(count(RICH), 1, "friendly players are ignored");
-    assert.equal(count(ABANDONED), 2, "friendly players are ignored");
+    assert.equal(count(RICH), 1, "teammates are ignored");
+    assert.equal(count(ABANDONED), 2, "teammates are ignored");
+    assertRichList([{ id: 2, name: "<b>Player 2</b>" }]);
+    rich.displayName = () => "Renamed";
+    interval!();
+    assertRichList([{ id: 2, name: "Renamed" }]);
+    rich.isAlive = () => false;
+    interval!();
+    assertRichList([]);
+    rich.isAlive = () => true;
+    f.me.isFriendly = () => true;
+    rich.team = () => "red";
+    interval!();
+    assertRichList([]);
+    f.me.isFriendly = () => false;
+    rich.team = () => "blue";
+    friend.gold = () => 0n;
+    for (let id = 4; id <= 9; id++) {
+      const other = player(id, 1);
+      Object.assign(other, { gold: () => 25_000_000n });
+      f.game.players().push(other);
+    }
+    interval!();
+    assertRichList(
+      [2, 4, 5, 6, 7, 8, 9].map((id) => ({
+        id,
+        name: id === 2 ? "Renamed" : `<b>Player ${id}</b>`,
+      })),
+    );
+    f.me.isFriendly = () => true;
+    const beforeAlliedWarning = count(RICH);
+    friend.team = () => "blue";
+    friend.gold = () => 99_000_000n;
+    interval!();
+    assert.equal(count(RICH), beforeAlliedWarning + 1, "temporary ally warns");
+    assertRichList(
+      [2, 3, 4, 5, 6, 7, 8, 9].map((id) => ({
+        id,
+        name: id === 2 ? "Renamed" : `<b>Player ${id}</b>`,
+      })),
+    );
+    const beforeTeamWarning = count(ABANDONED);
+    rich.team = () => "red";
+    interval!();
+    assert.equal(
+      count(ABANDONED),
+      beforeTeamWarning,
+      "disconnected teammate does not warn",
+    );
+    assert.equal(
+      lastMarkers().some((marker) => marker.id === 2),
+      false,
+    );
+    rich.team = () => "blue";
+    interval!();
+    assert.equal(
+      count(ABANDONED),
+      beforeTeamWarning + 1,
+      "disconnected ally warns",
+    );
+    f.setOver(true);
+    interval!();
+    assertRichList([]);
   } finally {
     stop();
     delete (globalThis as { window?: unknown }).window;
@@ -1271,6 +1367,13 @@ void test("betraying neighbors warn only for eligible observed alliance breaks",
     sent.filter(
       (message) => message.type === "OPENFRONT_OVERLAY_TRAITOR_NEIGHBOR",
     );
+  const assertTraitorList = (players: { id: number; name: string }[] | null) =>
+    assert.deepEqual(
+      sent
+        .filter((message) => message.type === "OPENFRONT_OVERLAY_STATE")
+        .at(-1)?.playerLists,
+      { richPlayers: [], traitorNeighbors: players },
+    );
   const enable = (enabled: boolean) =>
     listeners.get("message")!({
       source: fakeWindow,
@@ -1294,6 +1397,7 @@ void test("betraying neighbors warn only for eligible observed alliance breaks",
     );
     enable(true);
     interval!();
+    assertTraitorList([]);
     betray(3);
     f.game.update({ updates: {} });
     interval!();
@@ -1304,9 +1408,11 @@ void test("betraying neighbors warn only for eligible observed alliance breaks",
       1,
       "events survive later updates between polls",
     );
+    assertTraitorList([{ id: 2, name: "<b>Player 2</b>" }]);
     betray(1);
     interval!();
     assert.equal(alerts().length, 1, "betrayals against us are excluded");
+    assertTraitorList([]);
     f.ally.state.isDisconnected = true;
     betray(3);
     f.ally.state.isDisconnected = false;
@@ -1317,12 +1423,16 @@ void test("betraying neighbors warn only for eligible observed alliance breaks",
     betray(3);
     interval!();
     assert.equal(alerts().length, 1, "breaks without a debuff are excluded");
+    assertTraitorList([]);
     f.enemy.isTraitor = () => true;
     f.me.isFriendly = (other) => other === f.enemy;
+    f.me.team = f.enemy.team = () => "red";
     betray(3);
     interval!();
-    assert.equal(alerts().length, 1, "friendly neighbors are excluded");
+    assert.equal(alerts().length, 1, "teammates are excluded");
+    assertTraitorList([]);
     f.me.isFriendly = () => false;
+    f.enemy.team = () => "blue";
     f.setCatchup(true);
     betray(3);
     f.setCatchup(false);
@@ -1333,18 +1443,73 @@ void test("betraying neighbors warn only for eligible observed alliance breaks",
     enable(true);
     interval!();
     assert.equal(alerts().length, 1, "disabling clears pending warnings");
+    assertTraitorList([]);
     f.owners[1] = 0;
     f.game.update({ updates: {}, changed: [1] });
     interval!();
     betray(3);
     interval!();
     assert.equal(alerts().length, 1, "non-neighbors are excluded");
+    assertTraitorList([]);
     f.owners[1] = 2;
     f.game.update({ updates: {}, changed: [1] });
     interval!();
     betray(3);
     interval!();
     assert.equal(alerts().length, 2, "a later betrayal can alert again");
+    assertTraitorList([{ id: 2, name: "<b>Player 2</b>" }]);
+    f.enemy.displayName = () => "Renamed traitor";
+    interval!();
+    assertTraitorList([{ id: 2, name: "Renamed traitor" }]);
+    f.owners[1] = 0;
+    f.game.update({ updates: {}, changed: [1] });
+    interval!();
+    assertTraitorList([]);
+    f.owners[1] = 2;
+    f.game.update({ updates: {}, changed: [1] });
+    interval!();
+    assertTraitorList([{ id: 2, name: "Renamed traitor" }]);
+    f.setCatchup(true);
+    interval!();
+    assertTraitorList(null);
+    f.setCatchup(false);
+    interval!();
+    assertTraitorList([{ id: 2, name: "Renamed traitor" }]);
+    f.enemy.isTraitor = () => false;
+    interval!();
+    assertTraitorList([]);
+    f.enemy.isTraitor = () => true;
+    interval!();
+    assertTraitorList([]);
+    betray(3);
+    interval!();
+    assertTraitorList([{ id: 2, name: "Renamed traitor" }]);
+    f.enemy.isAlive = () => false;
+    interval!();
+    assertTraitorList([]);
+    f.enemy.isAlive = () => true;
+    f.me.isFriendly = () => true;
+    const beforeAlliedAlert = alerts().length;
+    betray(3);
+    interval!();
+    assert.equal(
+      alerts().length,
+      beforeAlliedAlert + 1,
+      "temporary allied neighbor warns",
+    );
+    assertTraitorList([{ id: 2, name: "Renamed traitor" }]);
+    f.enemy.team = () => "red";
+    f.enemy.state.isDisconnected = true;
+    betray(3);
+    interval!();
+    assert.equal(
+      alerts().length,
+      beforeAlliedAlert + 1,
+      "disconnected teammate does not warn",
+    );
+    assertTraitorList([]);
+    enable(false);
+    assertTraitorList([]);
   } finally {
     stop();
     delete (globalThis as { window?: unknown }).window;

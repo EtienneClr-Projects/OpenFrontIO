@@ -94,7 +94,7 @@ display boundary, not authentication.
 | Message | Direction and purpose |
 | --- | --- |
 | `OPENFRONT_OVERLAY_CONTROL` | UI to bridge: explicit boolean `enabled`, optional positive `requestId` |
-| `OPENFRONT_OVERLAY_STATE` | Bridge to UI: status, raw troops, advisor snapshot, `controlId`, silo markers |
+| `OPENFRONT_OVERLAY_STATE` | Bridge to UI: status, raw troops, advisor snapshot, `controlId`, silo markers, live `playerLists` |
 | `OPENFRONT_OVERLAY_SILOS` | Bridge to UI: changed projected silo marker array |
 | `OPENFRONT_OVERLAY_PIRATE_WARSHIPS` | Bridge to UI: changed projected pirate marker array |
 | `OPENFRONT_OVERLAY_FIRST_ENEMY_SILO` | Bridge to UI: first observed enemy silo in this game |
@@ -104,6 +104,13 @@ display boundary, not authentication.
 Keep producers, consumers, validation, fixtures and tests aligned when changing
 a payload. `requestId`/`controlId` prevents stale acknowledgements from reversing
 rapid toggles; preserve it.
+
+Persistent panel lists belong in polled state snapshots, not accumulated
+transient warning messages. `playerLists` carries current rich players and
+observed betraying neighbors; an empty array means no qualifying players,
+while `null` means the list is unavailable (for example during frontier catchup).
+Test list refreshes with an unchanged advisor snapshot: UI render deduplication
+must include independently updated list data.
 
 The panel uses a shadow root. Map markers and transient warnings instead use
 extension-owned fixed layers on the page. Only the interactive panel should
@@ -124,12 +131,17 @@ warnings use `2147483647`. These are not browser top-layer elements.
   time budget. Tick rollback, catchup and excessive pending changes rebuild it.
   Never replace this with a full map scan on every frame.
 - PUSH requires no non-tribe incoming troops, no stronger living frontier player
-  (including allies/tribes), and available troops strictly above 33% capacity
+  (including temporary allies/tribes but excluding teammates), and available
+  troops strictly above 33% capacity
   in opening or 42% otherwise. Equal strength is not stronger. Raw troop values
   stay integer units; UI display divides by ten.
 - The panel lists phase and stronger neighbors, not PUSH/RETAIN badges. PUSH
   colors the native troop bar green and adds the 42% marker. Brief indexing or
   catchup retains the last valid color; inactive/invalid guidance restores it.
+- Stronger-neighbor, rich-player and betrayer criteria exclude actual teammates
+  using equal non-null team IDs, not `isFriendly()` (which includes temporary
+  alliances). Apply this distinction to lists and alerts; disconnected teammates
+  remain teammates. Other monitors retain their own friendship filters.
 - Silo detection selects active missile silos of living nonlocal, nonfriendly
   owners. Orange triangles follow their tile centers; off-screen positions
   intersect the center-to-target ray with an inset viewport rectangle.

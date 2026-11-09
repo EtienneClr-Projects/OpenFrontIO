@@ -438,11 +438,15 @@ var OpenFrontOverlay = (function(exports) {
 			attackable: /* @__PURE__ */ new Set()
 		};
 	}
+	function sameTeam(a, b) {
+		if (a !== null && typeof a !== "string" || b !== null && typeof b !== "string") throw new UnsupportedClient("Invalid player team.");
+		return a !== null && a === b;
+	}
 	function analyze(o, map, spatial) {
 		const me = o.players.find((p) => p.id === o.myID);
 		const context = gamePhase(o, map, spatial);
 		const reserveThreshold = context === "opening" ? .33 : .42;
-		const strongerNeighbors = o.players.filter((p) => p.id !== me.id && p.alive && spatial.fronts.has(p.id) && p.troops > me.troops);
+		const strongerNeighbors = o.players.filter((p) => p.id !== me.id && !sameTeam(me.team, p.team) && p.alive && spatial.fronts.has(p.id) && p.troops > me.troops);
 		return {
 			status: "active",
 			enabled: true,
@@ -705,6 +709,9 @@ var OpenFrontOverlay = (function(exports) {
 		let lastNeighborError = null;
 		let warnedInactiveNeighborIds = /* @__PURE__ */ new Set();
 		let pendingTraitors = /* @__PURE__ */ new Set();
+		let observedTraitors = /* @__PURE__ */ new Set();
+		let richPlayers = [];
+		let traitorNeighbors = [];
 		let lastTraitorError = null;
 		let warnedRichIds = /* @__PURE__ */ new Set();
 		let warnedAbandonedIds = /* @__PURE__ */ new Set();
@@ -758,6 +765,9 @@ var OpenFrontOverlay = (function(exports) {
 				lastNeighborError = null;
 				warnedInactiveNeighborIds = /* @__PURE__ */ new Set();
 				pendingTraitors = /* @__PURE__ */ new Set();
+				observedTraitors = /* @__PURE__ */ new Set();
+				richPlayers = [];
+				traitorNeighbors = [];
 				lastTraitorError = null;
 				warnedRichIds = /* @__PURE__ */ new Set();
 				warnedAbandonedIds = /* @__PURE__ */ new Set();
@@ -802,11 +812,18 @@ var OpenFrontOverlay = (function(exports) {
 				const players = new Map(game.players().map((p) => [p.smallID(), p]));
 				for (const entry of breaks) {
 					if (!entry || typeof entry !== "object" || !Number.isSafeInteger(entry.traitorID) || !Number.isSafeInteger(entry.betrayedID)) throw new Error("Invalid alliance break update.");
-					if (entry.betrayedID === me.smallID()) continue;
+					if (entry.betrayedID === me.smallID()) {
+						pendingTraitors.delete(entry.traitorID);
+						observedTraitors.delete(entry.traitorID);
+						continue;
+					}
 					const traitor = players.get(entry.traitorID);
 					const betrayed = players.get(entry.betrayedID);
 					if (!traitor || !betrayed || typeof traitor.isTraitor !== "function" || typeof betrayed.isTraitor !== "function" || typeof betrayed.state?.isDisconnected !== "boolean") throw new Error("Missing betrayal player data.");
-					if (traitor.isTraitor() && !betrayed.isTraitor() && !betrayed.state.isDisconnected) pendingTraitors.add(entry.traitorID);
+					if (traitor.isTraitor() && !betrayed.isTraitor() && !betrayed.state.isDisconnected) {
+						pendingTraitors.add(entry.traitorID);
+						observedTraitors.add(entry.traitorID);
+					}
 				}
 				lastTraitorError = null;
 			} catch (error) {
@@ -820,20 +837,36 @@ var OpenFrontOverlay = (function(exports) {
 		const warnTraitorNeighbors = () => {
 			if (!requestedEnabled || !game || !inGame) {
 				pendingTraitors.clear();
+				observedTraitors.clear();
+				traitorNeighbors = [];
 				return;
 			}
-			if (pendingTraitors.size === 0) return;
 			const fronts = observer?.frontOwnerIds();
+			traitorNeighbors = null;
 			if (!fronts) return;
 			try {
 				const me = game.myPlayer();
 				if (!me) return;
 				const frontIds = new Set(fronts);
 				const names = [];
+				const current = [];
+				const stillTraitors = /* @__PURE__ */ new Set();
 				for (const candidate of game.players()) {
 					const id = candidate.smallID();
-					if (pendingTraitors.has(id) && frontIds.has(id) && id !== me.smallID() && candidate.isAlive() && !me.isFriendly(candidate) && candidate.isTraitor()) names.push(candidate.displayName().slice(0, 200));
+					if (!observedTraitors.has(id)) continue;
+					if (!candidate.isAlive() || !candidate.isTraitor()) continue;
+					stillTraitors.add(id);
+					if (frontIds.has(id) && id !== me.smallID() && !sameTeam(me.team(), candidate.team())) {
+						const name = candidate.displayName().slice(0, 200);
+						current.push({
+							id,
+							name
+						});
+						if (pendingTraitors.has(id)) names.push(name);
+					}
 				}
+				observedTraitors = stillTraitors;
+				traitorNeighbors = current.sort((a, b) => a.id - b.id);
 				pendingTraitors.clear();
 				if (names.length) postWarning("OPENFRONT_OVERLAY_TRAITOR_NEIGHBOR", names.slice(0, MAX_WARNED_PLAYER_NAMES));
 			} catch (error) {
@@ -1057,21 +1090,27 @@ var OpenFrontOverlay = (function(exports) {
 		};
 		const scanRichPlayers = () => {
 			if (stopped) return;
+			richPlayers = null;
 			const richIds = /* @__PURE__ */ new Set();
 			const abandonedIds = /* @__PURE__ */ new Set();
 			const richNames = [];
 			const abandonedNames = [];
 			const abandoned = [];
+			const current = [];
 			try {
 				if (inGame && game && requestedEnabled) {
 					const me = game.myPlayer();
 					if (me) for (const candidate of game.players()) {
 						if (typeof candidate.gold !== "function" || typeof candidate.smallID !== "function" || typeof candidate.isAlive !== "function" || typeof candidate.type !== "function" || typeof candidate.isFriendly !== "function" || typeof candidate.displayName !== "function") throw new Error("Missing player gold data.");
-						if (!candidate.isAlive() || candidate.type() === PlayerType.Bot || candidate.smallID() === me.smallID() || me.isFriendly(candidate)) continue;
+						if (!candidate.isAlive() || candidate.type() === PlayerType.Bot || candidate.smallID() === me.smallID() || sameTeam(me.team(), candidate.team())) continue;
 						const gold = candidate.gold();
 						if (typeof gold !== "bigint" && typeof gold !== "number") throw new Error("Invalid player gold.");
 						if (BigInt(Math.floor(Number(gold))) < RICH_GOLD_THRESHOLD) continue;
 						const id = candidate.smallID();
+						current.push({
+							id,
+							name: candidate.displayName().slice(0, 200)
+						});
 						if (typeof candidate.state?.isDisconnected !== "boolean") throw new Error("Missing player disconnection state.");
 						if (candidate.state.isDisconnected) {
 							abandonedIds.add(id);
@@ -1093,6 +1132,7 @@ var OpenFrontOverlay = (function(exports) {
 				return;
 			}
 			warnedRichIds = richIds;
+			richPlayers = current.sort((a, b) => a.id - b.id);
 			warnedAbandonedIds = abandonedIds;
 			abandonedRichPlayers = abandoned;
 			if (abandonedNames.length > 0) postWarning("OPENFRONT_OVERLAY_ABANDONED_RICH_PLAYER", abandonedNames.slice(0, MAX_WARNED_PLAYER_NAMES));
@@ -1226,7 +1266,11 @@ var OpenFrontOverlay = (function(exports) {
 				troops,
 				advisor,
 				controlId,
-				missileSilos
+				missileSilos,
+				playerLists: {
+					richPlayers: requestedEnabled ? richPlayers : [],
+					traitorNeighbors: requestedEnabled ? traitorNeighbors : []
+				}
 			}, window.location.origin);
 		};
 		const control = (event) => {
@@ -1235,6 +1279,9 @@ var OpenFrontOverlay = (function(exports) {
 			controlId = event.data.requestId ?? controlId;
 			requestedEnabled = inGame && !discoveryError && event.data.enabled;
 			pendingTraitors.clear();
+			observedTraitors.clear();
+			richPlayers = [];
+			traitorNeighbors = [];
 			if (!game) {
 				if (!discoveryError) advisor = emptyAdvisor(requestedEnabled ? "waiting" : "disabled", requestedEnabled);
 				publish();

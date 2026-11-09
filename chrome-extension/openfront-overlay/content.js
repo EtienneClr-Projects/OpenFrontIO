@@ -125,6 +125,11 @@
     "advisor_error",
     "strongNeighbors",
     "noStrongNeighbors",
+    "richPlayers",
+    "noRichPlayers",
+    "traitorNeighbors",
+    "noTraitorNeighbors",
+    "playerListUnavailable",
     "friendlyNeighbor",
     "hostileNeighbor",
     "phase_opening",
@@ -152,6 +157,8 @@
     neighbors: [],
   };
   let advisor = defaultAdvisor;
+  const emptyPlayerLists = { richPlayers: [], traitorNeighbors: [] };
+  let playerLists = emptyPlayerLists;
   let displayedRecommendation = null;
 
   function validAdvisor(value) {
@@ -208,6 +215,25 @@
     if (text !== undefined) element.textContent = text;
     if (parent) parent.appendChild(element);
     return element;
+  }
+
+  function validPlayerList(value) {
+    if (value === null) return true;
+    if (!Array.isArray(value) || value.length > 512) return false;
+    const ids = new Set();
+    return value.every((player) => {
+      if (
+        !player ||
+        !Number.isSafeInteger(player.id) ||
+        player.id < 0 ||
+        ids.has(player.id) ||
+        typeof player.name !== "string" ||
+        player.name.length > 200
+      )
+        return false;
+      ids.add(player.id);
+      return true;
+    });
   }
 
   function validMarkers(value, maxRadius = 100) {
@@ -437,7 +463,11 @@
         : advisorLabels[`advisor_${advisor.status}`];
     if (terminal && advisor.error)
       panel.status.textContent += ` ${advisor.error}`;
-    const signature = JSON.stringify({ advisor, troops: state.troops });
+    const signature = JSON.stringify({
+      advisor,
+      troops: state.troops,
+      playerLists,
+    });
     if (signature === lastDetails) return;
     lastDetails = signature;
     panel.details.replaceChildren();
@@ -466,6 +496,25 @@
         list,
       );
       item.className = neighbor.friendly ? "friendly" : "hostile";
+    }
+    for (const [key, emptyLabel] of [
+      ["richPlayers", "noRichPlayers"],
+      ["traitorNeighbors", "noTraitorNeighbors"],
+    ]) {
+      node("h3", advisorLabels[key], panel.details);
+      const players = playerLists[key];
+      if (players === null || players.length === 0) {
+        node(
+          "p",
+          advisorLabels[
+            players === null ? "playerListUnavailable" : emptyLabel
+          ],
+          panel.details,
+        );
+      } else {
+        const playersList = node("ul", undefined, panel.details);
+        for (const player of players) node("li", player.name, playersList);
+      }
     }
   }
 
@@ -826,6 +875,17 @@
       console.error("[OpenFront Overlay] Invalid advisor message.");
       return;
     }
+    const lists = event.data.playerLists;
+    if (
+      lists !== undefined &&
+      (!lists ||
+        typeof lists !== "object" ||
+        !validPlayerList(lists.richPlayers) ||
+        !validPlayerList(lists.traitorNeighbors))
+    ) {
+      console.error("[OpenFront Overlay] Invalid player lists message.");
+      return;
+    }
     const missileSilos = event.data.missileSilos ?? [];
     if (!validMarkers(missileSilos)) {
       console.error("[OpenFront Overlay] Invalid enemy silo message.");
@@ -847,11 +907,13 @@
     state = { status, troops };
     syncMarkers("silo", status === "idle" ? [] : missileSilos);
     advisor = event.data.advisor ?? defaultAdvisor;
+    playerLists = lists ?? emptyPlayerLists;
     pendingRequest = null;
     enabled = advisor.enabled;
     if (status === "idle") {
       enabled = false;
       advisor = defaultAdvisor;
+      playerLists = emptyPlayerLists;
     }
     if (status !== "playing") {
       displayedRecommendation = null;

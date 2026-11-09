@@ -17,11 +17,15 @@ Advice is off by default for each game. Activate it after entering a game to see
 - Troop recommendation: PUSH strictly above 33% reserve in Opening or 42% in
   other phases, provided there are no non-tribe incoming attacks and no stronger
   living bordering players. Either condition forces RETAIN in every phase.
-  Stronger bordering players include allies and tribes; equal troop counts do
+  Stronger bordering players include temporary allies and tribes, but exclude
+  actual teammates; equal troop counts do
   not trigger this rule. Comparisons use current available troops, not troops
   already committed to outgoing attacks. Troop reserves and incoming attacks
   inform the recommendation but are not listed in the overlay. It does not
   display PUSH or RETAIN text; the native troop bar turns green for PUSH.
+
+Empty player lists display `-` below their titles; unavailable lists retain
+their diagnostic message.
 
 After a PUSH recommendation, the green bar remains while the map index briefly
 catches up and refreshes when analysis resumes. It resets when leaving the game
@@ -77,7 +81,7 @@ appears for about two seconds and then fades away.
 
 ## Rich players
 
-While the advisor is active, living non-bot players who are not friendly and
+While the advisor is active, living non-bot players outside your team who
 hold at least 25M gold are reported (one warning per player until their gold
 drops below the threshold). **Watch rich players** (checked by default) gates
 both behaviours:
@@ -87,6 +91,12 @@ both behaviours:
   money: a centered warning appears and their territory is circled in orange.
   The circle is centered on the player's name label and sized from their
   territory; when off-screen, a chevron points toward it.
+
+The **Rich players (25M+ gold)** list below **Stronger bordering players**
+includes both connected and disconnected qualifying players anywhere on the
+map. It refreshes every 500 ms, removing players who spend their gold, die,
+or join your team. Temporary allies on other teams remain eligible for the list,
+warnings, and markers. The checkbox controls warnings and markers, not this list.
 
 ## Inactive neighbors
 
@@ -98,11 +108,18 @@ turns it off.
 
 ## Betraying neighbors
 
-While the advisor is active, a warning names living, non-friendly bordering
+While the advisor is active, a warning names living bordering
 players who betray someone other than you and receive the traitor defense
 debuff. Their defense is halved for 30 seconds, creating an opportunity to
 attack. The alert is based on observed alliance-break updates and may be missed
 while the advisor is inactive or the game is catching up.
+
+The **Betraying neighbors (halved defense)** list follows the rich-player list
+and refreshes every 500 ms. Observed betrayers remain listed only while alive,
+outside your team, bordering you, and still debuffed. Temporary allies on
+other teams remain eligible for both the list and alerts. Betraying you removes them
+from this opportunity list. Minimizing or leaving a game clears both lists;
+reactivating starts observing betrayals anew.
 
 ## Load in Chrome
 

@@ -214,6 +214,150 @@ function activeAdvisor(extra = {}) {
   };
 }
 
+await test("live player lists follow stronger neighbors and refresh without advisor changes", () => {
+  const { context, elements, send } = createContext();
+  runInNewContext(source, context);
+  const snapshot = {
+    status: "playing",
+    troops: 42000,
+    advisor: activeAdvisor(),
+  };
+  const headings = () =>
+    descendants(elements[0])
+      .filter((element) => element.tag === "h3")
+      .map((element) => element.textContent);
+  const items = () =>
+    descendants(elements[0]).filter((element) => element.tag === "li");
+  send({
+    ...snapshot,
+    playerLists: {
+      richPlayers: [{ id: 2, name: "<b>Rich player</b>" }],
+      traitorNeighbors: [{ id: 4, name: "Traitor" }],
+    },
+  });
+  assert.deepEqual(headings().slice(-3), [
+    messages.strongNeighbors.message,
+    messages.richPlayers.message,
+    messages.traitorNeighbors.message,
+  ]);
+  assert.deepEqual(
+    items()
+      .slice(-2)
+      .map((item) => item.textContent),
+    ["<b>Rich player</b>", "Traitor"],
+  );
+  assert.equal(items().at(-2).children.length, 0, "names are text, not markup");
+  const richCheckbox = descendants(elements[0]).find(
+    (element) =>
+      element.tag === "input" &&
+      element.attributes["aria-label"] === messages.watchRichPlayers.message,
+  );
+  richCheckbox.checked = false;
+  richCheckbox.listeners.change();
+  send({
+    ...snapshot,
+    playerLists: {
+      richPlayers: [{ id: 5, name: "New rich player" }],
+      traitorNeighbors: [],
+    },
+  });
+  assert.equal(items().at(-1).textContent, "New rich player");
+  assert.equal(
+    items().some((item) => item.textContent === "Traitor"),
+    false,
+  );
+  assert.ok(
+    descendants(elements[0]).some(
+      (element) => element.textContent === messages.noTraitorNeighbors.message,
+    ),
+  );
+  send({
+    ...snapshot,
+    playerLists: { richPlayers: [], traitorNeighbors: null },
+  });
+  assert.ok(
+    descendants(elements[0]).some(
+      (element) => element.textContent === messages.noRichPlayers.message,
+    ),
+  );
+  assert.ok(
+    descendants(elements[0]).some(
+      (element) =>
+        element.textContent === messages.playerListUnavailable.message,
+    ),
+  );
+  send({ status: "idle", troops: null });
+  assert.equal(items().length, 0);
+});
+
+await test("empty overlay lists display a simple dash below each title", () => {
+  const { context, elements, send } = createContext();
+  runInNewContext(source, context);
+  send({
+    status: "playing",
+    troops: 42000,
+    advisor: activeAdvisor({ neighbors: [] }),
+    playerLists: { richPlayers: [], traitorNeighbors: [] },
+  });
+  const headings = descendants(elements[0]).filter(
+    (element) => element.tag === "h3",
+  );
+  assert.deepEqual(
+    headings.slice(-3).map((heading) => {
+      const siblings = heading.parentElement.children;
+      const placeholder = siblings[siblings.indexOf(heading) + 1];
+      return [heading.textContent, placeholder.tag, placeholder.textContent];
+    }),
+    [
+      [messages.strongNeighbors.message, "p", "-"],
+      [messages.richPlayers.message, "p", "-"],
+      [messages.traitorNeighbors.message, "p", "-"],
+    ],
+  );
+});
+
+await test("malformed and foreign player lists cannot replace displayed lists", () => {
+  const { context, elements, send, errors } = createContext();
+  runInNewContext(source, context);
+  const snapshot = {
+    status: "playing",
+    troops: 42000,
+    advisor: activeAdvisor(),
+  };
+  const good = { richPlayers: [{ id: 2, name: "Rich" }], traitorNeighbors: [] };
+  send({ ...snapshot, playerLists: good });
+  const malformed = [
+    null,
+    {},
+    { ...good, richPlayers: "Rich" },
+    { ...good, richPlayers: [null] },
+    { ...good, richPlayers: [{ id: -1, name: "Bad" }] },
+    { ...good, richPlayers: [{ id: 2, name: 7 }] },
+    { ...good, richPlayers: [{ id: 2, name: "x".repeat(201) }] },
+    { ...good, richPlayers: [good.richPlayers[0], good.richPlayers[0]] },
+    {
+      ...good,
+      traitorNeighbors: Array.from({ length: 513 }, (_, id) => ({
+        id,
+        name: "Bad",
+      })),
+    },
+  ];
+  for (const playerLists of malformed) send({ ...snapshot, playerLists });
+  assert.equal(errors.length, malformed.length);
+  send(
+    { ...snapshot, playerLists: { richPlayers: [], traitorNeighbors: [] } },
+    { origin: "https://example.com" },
+  );
+  send(
+    { ...snapshot, playerLists: { richPlayers: [], traitorNeighbors: [] } },
+    { source: {} },
+  );
+  assert.ok(
+    descendants(elements[0]).some((element) => element.textContent === "Rich"),
+  );
+});
+
 await test("localized MV3 manifest loads only the advisor and packaged bridge", () => {
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.default_locale, "en");
@@ -1274,7 +1418,11 @@ await test("stronger neighbors show non-allies first, colored and compact", () =
     { id: 3, name: "Other", friendly: false, troops: 12000 },
     { id: 4, name: "Friend", friendly: true, troops: 999 },
   ];
-  send({ status: "playing", troops: 42, advisor: activeAdvisor({ neighbors }) });
+  send({
+    status: "playing",
+    troops: 42,
+    advisor: activeAdvisor({ neighbors }),
+  });
 
   const host = elements[0];
   const items = descendants(host).filter((element) => element.tag === "li");
