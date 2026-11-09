@@ -87,7 +87,7 @@
   let warnedMissingHudAnchor = false;
   const originalFillBackgrounds = new WeakMap();
   const troopFormatter = new Intl.NumberFormat(undefined, {
-    minimumFractionDigits: 1,
+    notation: "compact",
     maximumFractionDigits: 1,
   });
 
@@ -412,7 +412,7 @@
 
   function renderAdvisor() {
     if (!panel) return;
-    const minimized = !enabled;
+    const minimized = !enabled && advisor.status !== "finished";
     panel.host.dataset.minimized = String(minimized);
     panel.collapse.textContent =
       advisorLabels[minimized ? "expandAdvisor" : "collapseAdvisor"];
@@ -452,16 +452,20 @@
       node("p", advisorLabels.noStrongNeighbors, panel.details);
     }
     const list = node("ul", undefined, panel.details);
-    for (const neighbor of advisor.neighbors) {
+    const neighbors = [...advisor.neighbors].sort(
+      (a, b) => Number(a.friendly) - Number(b.friendly),
+    );
+    for (const neighbor of neighbors) {
       const relation =
         advisorLabels[
           neighbor.friendly ? "friendlyNeighbor" : "hostileNeighbor"
         ];
-      node(
+      const item = node(
         "li",
         `${neighbor.name} - ${relation}: ${troops(neighbor.troops)}`,
         list,
       );
+      item.className = neighbor.friendly ? "friendly" : "hostile";
     }
   }
 
@@ -486,6 +490,8 @@
       p { margin: 6px 0; }
       ul { margin: 6px 0; padding-left: 20px; }
       li { margin: 6px 0; }
+      li.friendly { color: #86efac; }
+      li.hostile { color: #fca5a5; }
       [data-urgent="true"] { border-left: 3px solid #f6a34b; padding-left: 8px; }
       button:focus-visible { outline: 2px solid #f6cf64; outline-offset: 2px; }
       .silo-visibility { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; cursor: pointer; }

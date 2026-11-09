@@ -115,7 +115,8 @@ warnings use `2147483647`. These are not browser top-layer elements.
 - Advice starts disabled and minimized for each game. Activate enables the
   observer; Minimize disables it. Activation can wait through loading/spawn.
   Leaving/replacing a game resets activation. Finished, unsupported and error
-  states stop analysis and collapse the panel with diagnostics.
+  states stop analysis. The finished state keeps the panel expanded with a
+  diagnostic; unsupported and error states collapse it.
 - `GameObserver` wraps only this game instance's `update`, preserving receiver,
   arguments, return value and original exceptions. It restores its own hook
   without overwriting a subsequent owner's hook. Do not patch global prototypes.
@@ -403,6 +404,18 @@ and [connecting to running Chrome](https://github.com/ChromeDevTools/chrome-devt
 | Markers absent | Advisor activation, checkbox, valid local player, enemy/active filters, transform validity and console diagnostics |
 | Green bar disappears after a Lit update | Scoped mutation observers, panel replacement and idempotent resynchronization |
 | Reload has no effect/context invalidated | Reload the game tab too; live tabs retain scripts from the prior extension instance |
+
+## Keep this skill improving
+
+When work using this skill uncovers a durable, evidence-backed improvement to
+the workflow or guidance, update this `SKILL.md` as part of the same task.
+Prefer findings that prevent repeated investigation, clarify a source of truth,
+or make implementation and verification more efficient or reliable. Check
+proposed guidance against current code, tests, and repository instructions;
+revise or replace outdated guidance rather than layering on conflicting
+instructions. Keep edits focused and reusable: do not record speculation,
+one-off task details, or facts that belong in implementation documentation.
+Mention any skill update in the task summary.
 
 When finishing a change, state what was rebuilt, which commands passed, what was
 manually checked, and whether the user must reload. Do not equate fixture tests

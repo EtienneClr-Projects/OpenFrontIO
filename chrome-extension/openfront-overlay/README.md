@@ -11,7 +11,8 @@ It runs on the normal remote OpenFront.io client, not a locally compiled game.
 
 Advice is off by default for each game. Activate it after entering a game to see:
 
-- Stronger bordering players: friendly/enemy labels and troop comparisons.
+- Stronger bordering players: enemies first in red, friendlies in green, with
+  compact troop counts and friendly/enemy labels.
 - Current phase: opening, economy, contested, nuclear, or endgame.
 - Troop recommendation: PUSH strictly above 33% reserve in Opening or 42% in
   other phases, provided there are no non-tribe incoming attacks and no stronger
@@ -30,9 +31,10 @@ The advisor uses the existing reference advisor's spatial and phase logic.
 Phase depends on territory, neighbors and unit evidence, not just elapsed time.
 It is heuristic guidance, not a prediction of victory or guaranteed defenses.
 Activation during loading or spawn is retained until the game view is ready.
-Leaving or replacing a game resets activation. Finished games, unsupported
-clients and advisor errors collapse the panel, retaining a compact diagnostic
-beside the disabled activation button.
+Leaving or replacing a game resets activation. When a game finishes, analysis
+stops and the overlay stays expanded with a diagnostic. Unsupported clients and
+advisor errors collapse the panel, retaining a compact diagnostic beside the
+disabled activation button.
 Only the panel captures clicks; the rest
 of the page remains available to the game's controls.
 
