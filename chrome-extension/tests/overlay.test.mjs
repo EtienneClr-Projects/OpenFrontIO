@@ -13,7 +13,7 @@ const messages = JSON.parse(
 const source = readFileSync(new URL("content.js", base), "utf8");
 const displayedTroops = (raw) =>
   new Intl.NumberFormat(undefined, {
-    minimumFractionDigits: 1,
+    notation: "compact",
     maximumFractionDigits: 1,
   }).format(raw / 10);
 
@@ -1030,10 +1030,10 @@ await test("foreign and malformed messages cannot replace active advice", () => 
   );
 });
 
-await test("terminal states collapse and retain explicit diagnostics", () => {
+await test("terminal states retain explicit diagnostics", () => {
   const { context, elements, send } = createContext();
   runInNewContext(source, context);
-  for (const status of ["unsupported", "error", "finished"]) {
+  for (const status of ["unsupported", "error"]) {
     send({
       status: "playing",
       troops: 42,
@@ -1064,6 +1064,24 @@ await test("terminal states collapse and retain explicit diagnostics", () => {
     assert.equal(collapse.textContent, messages.expandAdvisor.message);
     assert.equal(elements[0].dataset.minimized, "true");
   }
+  send({
+    status: "playing",
+    troops: 42,
+    advisor: activeAdvisor({
+      status: "finished",
+      enabled: false,
+    }),
+  });
+  const nodes = descendants(elements[0]);
+  const diagnostic = nodes.find(
+    (element) => element.attributes.role === "status",
+  );
+  const collapse = nodes.find((element) => element.tag === "button");
+  assert.equal(diagnostic.hidden, false);
+  assert.equal(diagnostic.textContent, messages.advisor_finished.message);
+  assert.equal(collapse.disabled, true);
+  assert.equal(collapse.attributes["aria-expanded"], "true");
+  assert.equal(elements[0].dataset.minimized, "false");
 });
 
 await test("UI keeps accessible names and renders the silo visibility checkbox", () => {
@@ -1238,6 +1256,59 @@ await test("all phases and neighbor troop counts display correctly", () => {
       assert.equal(elements.length, 4);
     }
   }
+});
+
+await test("stronger neighbors show non-allies first, colored and compact", () => {
+  const { context, elements, send } = createContext();
+  context.Intl = {
+    NumberFormat: class extends Intl.NumberFormat {
+      constructor(_locale, options) {
+        super("en-US", options);
+      }
+    },
+  };
+  runInNewContext(source, context);
+  const neighbors = [
+    { id: 1, name: "Ally", friendly: true, troops: 11499990 },
+    { id: 2, name: "Enemy", friendly: false, troops: 680490 },
+    { id: 3, name: "Other", friendly: false, troops: 12000 },
+    { id: 4, name: "Friend", friendly: true, troops: 999 },
+  ];
+  send({ status: "playing", troops: 42, advisor: activeAdvisor({ neighbors }) });
+
+  const host = elements[0];
+  const items = descendants(host).filter((element) => element.tag === "li");
+  assert.deepEqual(
+    items.map((item) => item.textContent),
+    [
+      `Enemy - ${messages.hostileNeighbor.message}: 68K`,
+      `Other - ${messages.hostileNeighbor.message}: 1.2K`,
+      `Ally - ${messages.friendlyNeighbor.message}: 1.1M`,
+      `Friend - ${messages.friendlyNeighbor.message}: 99.9`,
+    ],
+  );
+  assert.deepEqual(
+    items.map((item) => item.className),
+    ["hostile", "hostile", "friendly", "friendly"],
+  );
+  const stylesheet = descendants(host).find(
+    (element) => element.tag === "style",
+  );
+  assert.match(stylesheet.textContent, /li\.friendly \{ color: #86efac; \}/);
+  assert.match(stylesheet.textContent, /li\.hostile \{ color: #fca5a5; \}/);
+
+  send({
+    status: "playing",
+    troops: 42,
+    advisor: activeAdvisor({
+      neighbors: neighbors.map((neighbor) =>
+        neighbor.id === 1 ? { ...neighbor, friendly: false } : neighbor,
+      ),
+    }),
+  });
+  const updated = descendants(host).filter((element) => element.tag === "li");
+  assert.ok(updated[0].textContent.startsWith("Ally - "));
+  assert.equal(updated[0].className, "hostile");
 });
 
 await test("missing localization fails explicitly without mounting incomplete UI", () => {
