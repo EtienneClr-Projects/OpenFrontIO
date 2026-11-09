@@ -45,7 +45,12 @@
     "message": "Advisor stopped after an error. See DevTools."
   },
   "strongNeighbors": { "message": "Stronger bordering players" },
-  "noStrongNeighbors": { "message": "No stronger bordering players observed." },
+  "noStrongNeighbors": { "message": "-" },
+  "richPlayers": { "message": "Rich players (25M+ gold)" },
+  "noRichPlayers": { "message": "-" },
+  "traitorNeighbors": { "message": "Betraying neighbors (halved defense)" },
+  "noTraitorNeighbors": { "message": "-" },
+  "playerListUnavailable": { "message": "Player list currently unavailable." },
   "friendlyNeighbor": { "message": "Friendly" },
   "hostileNeighbor": { "message": "Enemy" },
   "phase_opening": { "message": "Phase: Opening / expansion" },

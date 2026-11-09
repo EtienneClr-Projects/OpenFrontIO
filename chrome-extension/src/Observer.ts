@@ -356,6 +356,15 @@ export function observe(game: RemoteGame): AdvisorObservation {
   };
 }
 
+export function sameTeam(a: string | null, b: string | null): boolean {
+  if (
+    (a !== null && typeof a !== "string") ||
+    (b !== null && typeof b !== "string")
+  )
+    throw new UnsupportedClient("Invalid player team.");
+  return a !== null && a === b;
+}
+
 export function analyze(
   o: AdvisorObservation,
   map: AdvisorMap,
@@ -367,6 +376,7 @@ export function analyze(
   const strongerNeighbors = o.players.filter(
     (p) =>
       p.id !== me.id &&
+      !sameTeam(me.team, p.team) &&
       p.alive &&
       spatial.fronts.has(p.id) &&
       p.troops > me.troops,

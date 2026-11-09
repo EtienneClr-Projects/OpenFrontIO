@@ -1,6 +1,6 @@
 import { PlayerType, UnitType } from "@openfront/engine-api/game/GameTypes";
 import { GameUpdateType } from "@openfront/engine-api/game/GameUpdates";
-import { emptyAdvisor, GameObserver, rawTroops } from "./Observer";
+import { emptyAdvisor, GameObserver, rawTroops, sameTeam } from "./Observer";
 import type { AdvisorSnapshot, RemoteGame, RemotePlayer } from "./Observer";
 
 interface RemoteTransformHandler {
@@ -37,6 +37,11 @@ const ABANDONED_MAX_RADIUS = 400;
 interface RemoteRichCandidate extends RemotePlayer {
   gold(): bigint | number;
   nameLocation(): { x: number; y: number; size: number } | undefined;
+}
+
+interface NamedPlayer {
+  id: number;
+  name: string;
 }
 
 type WarningType =
@@ -100,6 +105,9 @@ export function startBridge(): () => void {
   let lastNeighborError: string | null = null;
   let warnedInactiveNeighborIds = new Set<number>();
   let pendingTraitors = new Set<number>();
+  let observedTraitors = new Set<number>();
+  let richPlayers: NamedPlayer[] | null = [];
+  let traitorNeighbors: NamedPlayer[] | null = [];
   let lastTraitorError: string | null = null;
   let warnedRichIds = new Set<number>();
   let warnedAbandonedIds = new Set<number>();
@@ -161,6 +169,9 @@ export function startBridge(): () => void {
       lastNeighborError = null;
       warnedInactiveNeighborIds = new Set();
       pendingTraitors = new Set();
+      observedTraitors = new Set();
+      richPlayers = [];
+      traitorNeighbors = [];
       lastTraitorError = null;
       warnedRichIds = new Set();
       warnedAbandonedIds = new Set();
@@ -229,7 +240,11 @@ export function startBridge(): () => void {
           !Number.isSafeInteger(entry.betrayedID)
         )
           throw new Error("Invalid alliance break update.");
-        if (entry.betrayedID === me.smallID()) continue;
+        if (entry.betrayedID === me.smallID()) {
+          pendingTraitors.delete(entry.traitorID);
+          observedTraitors.delete(entry.traitorID);
+          continue;
+        }
         const traitor = players.get(entry.traitorID);
         const betrayed = players.get(entry.betrayedID);
         if (
@@ -246,8 +261,10 @@ export function startBridge(): () => void {
           traitor.isTraitor() &&
           !betrayed.isTraitor() &&
           !betrayed.state.isDisconnected
-        )
+        ) {
           pendingTraitors.add(entry.traitorID);
+          observedTraitors.add(entry.traitorID);
+        }
       }
       lastTraitorError = null;
     } catch (error) {
@@ -262,29 +279,37 @@ export function startBridge(): () => void {
   const warnTraitorNeighbors = () => {
     if (!requestedEnabled || !game || !inGame) {
       pendingTraitors.clear();
+      observedTraitors.clear();
+      traitorNeighbors = [];
       return;
     }
-    if (pendingTraitors.size === 0) return;
     const fronts = observer?.frontOwnerIds();
+    traitorNeighbors = null;
     if (!fronts) return;
     try {
       const me = game.myPlayer();
       if (!me) return;
       const frontIds = new Set(fronts);
       const names: string[] = [];
+      const current: NamedPlayer[] = [];
+      const stillTraitors = new Set<number>();
       for (const candidate of game.players()) {
         const id = candidate.smallID();
+        if (!observedTraitors.has(id)) continue;
+        if (!candidate.isAlive() || !candidate.isTraitor()) continue;
+        stillTraitors.add(id);
         if (
-          pendingTraitors.has(id) &&
           frontIds.has(id) &&
           id !== me.smallID() &&
-          candidate.isAlive() &&
-          !me.isFriendly(candidate) &&
-          candidate.isTraitor()
+          !sameTeam(me.team(), candidate.team())
         ) {
-          names.push(candidate.displayName().slice(0, 200));
+          const name = candidate.displayName().slice(0, 200);
+          current.push({ id, name });
+          if (pendingTraitors.has(id)) names.push(name);
         }
       }
+      observedTraitors = stillTraitors;
+      traitorNeighbors = current.sort((a, b) => a.id - b.id);
       pendingTraitors.clear();
       if (names.length)
         postWarning(
@@ -668,11 +693,13 @@ export function startBridge(): () => void {
 
   const scanRichPlayers = () => {
     if (stopped) return;
+    richPlayers = null;
     const richIds = new Set<number>();
     const abandonedIds = new Set<number>();
     const richNames: string[] = [];
     const abandonedNames: string[] = [];
     const abandoned: RemoteRichCandidate[] = [];
+    const current: NamedPlayer[] = [];
     try {
       if (inGame && game && requestedEnabled) {
         const me = game.myPlayer();
@@ -692,7 +719,7 @@ export function startBridge(): () => void {
               !candidate.isAlive() ||
               candidate.type() === PlayerType.Bot ||
               candidate.smallID() === me.smallID() ||
-              me.isFriendly(candidate)
+              sameTeam(me.team(), candidate.team())
             ) {
               continue;
             }
@@ -703,6 +730,7 @@ export function startBridge(): () => void {
               continue;
             }
             const id = candidate.smallID();
+            current.push({ id, name: candidate.displayName().slice(0, 200) });
             if (typeof candidate.state?.isDisconnected !== "boolean")
               throw new Error("Missing player disconnection state.");
             if (candidate.state.isDisconnected) {
@@ -728,6 +756,7 @@ export function startBridge(): () => void {
       return;
     }
     warnedRichIds = richIds;
+    richPlayers = current.sort((a, b) => a.id - b.id);
     warnedAbandonedIds = abandonedIds;
     abandonedRichPlayers = abandoned;
     if (abandonedNames.length > 0)
@@ -931,6 +960,10 @@ export function startBridge(): () => void {
         advisor,
         controlId,
         missileSilos,
+        playerLists: {
+          richPlayers: requestedEnabled ? richPlayers : [],
+          traitorNeighbors: requestedEnabled ? traitorNeighbors : [],
+        },
       },
       window.location.origin,
     );
@@ -947,6 +980,9 @@ export function startBridge(): () => void {
     controlId = event.data.requestId ?? controlId;
     requestedEnabled = inGame && !discoveryError && event.data.enabled;
     pendingTraitors.clear();
+    observedTraitors.clear();
+    richPlayers = [];
+    traitorNeighbors = [];
     if (!game) {
       if (!discoveryError) {
         advisor = emptyAdvisor(
