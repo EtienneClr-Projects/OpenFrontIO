@@ -148,8 +148,10 @@ export function startBridge(): () => void {
       : null;
     const found = foundMenu?.game ?? null;
     if (found !== game || playing !== inGame) {
+      // Advice is on by default for every game; a toggle made while the game
+      // is still loading is kept until the game instance appears.
       if (!playing || playing !== inGame || game !== null) {
-        requestedEnabled = false;
+        requestedEnabled = playing;
       }
       observer?.dispose();
       observer = null;

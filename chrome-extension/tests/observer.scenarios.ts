@@ -886,13 +886,16 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
   };
   const stop = startBridge();
   try {
-    assert.equal(messages.at(-1)?.advisor.status, "disabled");
+    assert.equal(messages.at(-1)?.advisor.enabled, true, "enabled by default");
+    assert.equal(messages.at(-1)?.advisor.status, "active");
     assert.equal(messages.at(-1)?.troops, 100);
+    message(fakeWindow, "https://openfront.io", false);
+    assert.equal(messages.at(-1)?.advisor.status, "disabled");
     interval!();
     assert.deepEqual(
       messages.filter((message) => message.type === "OPENFRONT_OVERLAY_SILOS"),
       [],
-      "silo markers are skipped while minimized",
+      "silo markers are skipped while disabled",
     );
     message(fakeWindow, "https://openfront.io", true);
     f.units.push(
@@ -1011,14 +1014,15 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
       count + 2,
       "new incoming attack publishes immediately",
     );
+    message(fakeWindow, "https://openfront.io", false);
     const next = fixture();
     found = next.game;
     interval!();
     assert.equal(f.game.update, original);
     assert.equal(
-      messages.at(-1)?.advisor.status,
-      "disabled",
-      "client replacement resets opt-in",
+      messages.at(-1)?.advisor.enabled,
+      true,
+      "client replacement resets to the enabled default",
     );
     message(fakeWindow, "https://openfront.io", true);
     inGame = false;
@@ -1060,8 +1064,12 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
     interval!();
     inGame = true;
     interval!();
-    assert.equal(messages.at(-1)?.advisor.enabled, false);
-    assert.equal(f.game.update, original);
+    assert.equal(messages.at(-1)?.advisor.enabled, true);
+    assert.notEqual(
+      f.game.update,
+      original,
+      "re-entering a game observes it by default",
+    );
     stop();
     assert.equal(interval, null);
     assert.equal(listeners.size, 0);
@@ -1213,6 +1221,11 @@ void test("rich players warn once, and abandoned rich players are circled", () =
       radius: number;
     }[];
   try {
+    listeners.get("message")!({
+      source: fakeWindow,
+      origin: "https://openfront.io",
+      data: { type: "OPENFRONT_OVERLAY_CONTROL", enabled: false, requestId: 1 },
+    } as MessageEvent);
     interval!();
     rich.gold = () => 30_000_000n;
     interval!();
@@ -1221,7 +1234,7 @@ void test("rich players warn once, and abandoned rich players are circled", () =
     listeners.get("message")!({
       source: fakeWindow,
       origin: "https://openfront.io",
-      data: { type: "OPENFRONT_OVERLAY_CONTROL", enabled: true, requestId: 1 },
+      data: { type: "OPENFRONT_OVERLAY_CONTROL", enabled: true, requestId: 2 },
     } as MessageEvent);
     rich.gold = () => 24_999_999n;
     interval!();
@@ -1387,6 +1400,7 @@ void test("betraying neighbors warn only for eligible observed alliance breaks",
       },
     });
   try {
+    enable(false);
     f.enemy.isTraitor = () => true;
     betray(3);
     interval!();
@@ -1561,13 +1575,18 @@ void test("disconnected players bordering us raise one inactive neighbor alert",
   const TYPE = "OPENFRONT_OVERLAY_INACTIVE_NEIGHBOR";
   const alerts = () => sent.filter((message) => message.type === TYPE);
   try {
+    listeners.get("message")!({
+      source: fakeWindow,
+      origin: "https://openfront.io",
+      data: { type: "OPENFRONT_OVERLAY_CONTROL", enabled: false, requestId: 1 },
+    } as MessageEvent);
     f.enemy.state.isDisconnected = true;
     interval!();
     assert.equal(alerts().length, 0, "nothing is reported while advice is off");
     listeners.get("message")!({
       source: fakeWindow,
       origin: "https://openfront.io",
-      data: { type: "OPENFRONT_OVERLAY_CONTROL", enabled: true, requestId: 1 },
+      data: { type: "OPENFRONT_OVERLAY_CONTROL", enabled: true, requestId: 2 },
     } as MessageEvent);
     interval!();
     interval!();
