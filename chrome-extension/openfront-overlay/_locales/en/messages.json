@@ -4,7 +4,7 @@
     "description": "Extension description displayed by Chrome."
   },
   "advisorTitle": { "message": "Strategy advisor" },
-  "collapseAdvisor": { "message": "Minimize" },
+  "collapseAdvisor": { "message": "Disable" },
   "expandAdvisor": { "message": "Activate" },
   "findEnemySilos": { "message": "Find enemy silos" },
   "monitorPirates": { "message": "Monitor pirated tradeships" },

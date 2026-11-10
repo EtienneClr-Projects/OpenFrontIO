@@ -1,15 +1,14 @@
 # OpenFront Overlay
 
 A standalone Chrome extension (Manifest V3). Version 0.3.0
-shows a minimized advisor control at the bottom left. Each game starts with
-advice off. Click the top-right **Activate** button to expand the panel and enable
-read-only strategy analysis, refreshed every 500 ms. Click **Minimize** to collapse
-the panel and stop observation. Troop counts appear in the advisor's metrics.
+shows the advisor control at the bottom left. Each game starts with
+advice on, refreshed every 500 ms. Click the top-right **Disable** button to collapse
+the panel and stop observation, and **Activate** to turn it back on. Troop counts appear in the advisor's metrics.
 It runs on the normal remote OpenFront.io client, not a locally compiled game.
 
 ## Advisor milestone
 
-Advice is off by default for each game. Activate it after entering a game to see:
+Advice is on by default for each game. Click **Disable** to stop it; you will see:
 
 - Stronger bordering players: enemies first in red, friendlies in green, with
   compact troop counts and friendly/enemy labels.
@@ -241,21 +240,21 @@ analysis logic and game fixtures. Verify layout and Chrome loading in the browse
 1. Check that Chrome reports no extension errors.
 2. Reload the homepage and look for the compact bottom-left panel and the
    `[OpenFront Overlay] Advisor overlay mounted.` message in DevTools.
-3. Open Solo and start a game; verify the control stays minimized and advice
-   stays off. Click **Activate** to expand and enable it. Return home to verify
-   it minimizes and resets.
+3. Open Solo and start a game; verify the panel is expanded and advice is
+   on. Click **Disable** to collapse it, then **Activate** to enable it again.
+   Return home to verify it resets.
 4. Click game controls outside the panel; they should work normally.
 5. Reload the tab; there should be exactly one `#openfront-advisor-ui`.
-6. Advice must initially be off. Activate it and wait for map indexing. Compare
+6. Advice must initially be on. Wait for map indexing. Compare
    reserve capacity, incoming attacks and bordering players against the game.
-7. Click **Minimize**; advice must stop and the panel must collapse. Activate
-   again, return home, and enter another game; advice must be off again.
+7. Click **Disable**; advice must stop and the panel must collapse. Activate
+   again, return home, and enter another game; advice must be on again.
 8. Try a team game and verify friendly stronger neighbors are not labeled enemies.
    The advisor panel should never display PUSH or RETAIN text. When the
    recommendation is PUSH, the filled troop bar should turn green and show the
    vertical 42% marker; RETAIN or inactive advice should restore its normal color.
-9. Activate during loading/spawn; the panel should stay expanded while waiting
-   and automatically begin analysis when ready. Minimize while waiting to cancel.
+9. Click **Disable** during loading/spawn, then **Activate**; the panel should stay expanded while waiting
+   and automatically begin analysis when ready.
 10. Confirm no visible title, read-only legend, checkbox or “Advisor is active”
     text remains. Finished/error states should collapse with visible diagnostics.
 

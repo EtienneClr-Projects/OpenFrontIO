@@ -746,7 +746,7 @@ var OpenFrontOverlay = (function(exports) {
 			const foundMenu = playing ? document.querySelector("build-menu") : null;
 			const found = foundMenu?.game ?? null;
 			if (found !== game || playing !== inGame) {
-				if (!playing || playing !== inGame || game !== null) requestedEnabled = false;
+				if (!playing || playing !== inGame || game !== null) requestedEnabled = playing;
 				observer?.dispose();
 				observer = null;
 				game = found;

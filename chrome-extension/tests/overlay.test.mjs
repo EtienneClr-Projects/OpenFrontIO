@@ -1340,18 +1340,27 @@ await test("packaged MAIN bridge and isolated UI agree on loading activation and
   runInNewContext(readFileSync(new URL("inject.js", base), "utf8"), context);
   const host = elements[0];
   const button = descendants(host).find((element) => element.tag === "button");
-  assert.equal(host.dataset.minimized, "true");
+  assert.equal(host.dataset.minimized, "false", "enabled by default");
   assert.equal(button.disabled, false);
-  button.listeners.click();
-  assert.equal(host.dataset.minimized, "false");
+  assert.equal(button.textContent, messages.collapseAdvisor.message);
+  assert.equal(messages.collapseAdvisor.message, "Disable");
   assert.equal(controls.at(-1).data.advisor.enabled, true);
   assert.equal(controls.at(-1).data.advisor.status, "waiting");
-  assert.equal(controls.at(-1).data.controlId, 1);
   poll();
   assert.equal(host.dataset.minimized, "false");
   button.listeners.click();
   assert.equal(host.dataset.minimized, "true");
   assert.equal(controls.at(-1).data.advisor.enabled, false);
+  assert.equal(controls.at(-1).data.controlId, 1);
+  poll();
+  assert.equal(
+    host.dataset.minimized,
+    "true",
+    "disable persists while polling",
+  );
+  button.listeners.click();
+  assert.equal(host.dataset.minimized, "false");
+  assert.equal(controls.at(-1).data.advisor.enabled, true);
   assert.equal(controls.at(-1).data.controlId, 2);
   button.listeners.click();
   inGame = false;
@@ -1360,8 +1369,12 @@ await test("packaged MAIN bridge and isolated UI agree on loading activation and
   assert.equal(button.disabled, true);
   inGame = true;
   poll();
-  assert.equal(controls.at(-1).data.advisor.enabled, false);
-  assert.equal(host.dataset.minimized, "true");
+  assert.equal(
+    controls.at(-1).data.advisor.enabled,
+    true,
+    "a new game is enabled again",
+  );
+  assert.equal(host.dataset.minimized, "false");
 });
 
 await test("all phases and neighbor troop counts display correctly", () => {

@@ -119,8 +119,9 @@ warnings use `2147483647`. These are not browser top-layer elements.
 
 ## Current lifecycle and behavior
 
-- Advice starts disabled and minimized for each game. Activate enables the
-  observer; Minimize disables it. Activation can wait through loading/spawn.
+- Advice starts enabled (expanded) for each game. **Disable** (formerly
+  Minimize) turns the observer off and collapses the panel; Activate turns it
+  on again. Activation can wait through loading/spawn.
   Leaving/replacing a game resets activation. Finished, unsupported and error
   states stop analysis. The finished state keeps the panel expanded with a
   diagnostic; unsupported and error states collapse it.
