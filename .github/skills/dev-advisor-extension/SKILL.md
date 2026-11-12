@@ -28,20 +28,21 @@ Before editing:
 
 Paths in commands below are relative to the repository root.
 
-| Source | What to find there |
-| --- | --- |
-| [manifest.json](../../../chrome-extension/openfront-overlay/manifest.json) | Supported origins, Chrome minimum, declarative script worlds and injection timing |
-| [src/Main.ts](../../../chrome-extension/src/Main.ts) | Game discovery, bridge messages, polling, projections, silo/transport/pirate detection and teardown |
-| [src/Observer.ts](../../../chrome-extension/src/Observer.ts) | Remote client interfaces, API guards, observation, recommendation, incremental map indexing and update hook |
-| [content.js](../../../chrome-extension/openfront-overlay/content.js) | Isolated UI, message validation, controls, warning styles, marker rendering and native troop-bar integration |
-| [English messages](../../../chrome-extension/openfront-overlay/_locales/en/messages.json) | Chrome i18n labels and warning text |
-| [build.mjs](../../../chrome-extension/src/build.mjs) | Standalone bridge build, enum extraction and runtime dependency allowlist |
-| [inject.js](../../../chrome-extension/openfront-overlay/inject.js) | Generated MAIN-world bundle shipped to Chrome; never edit manually |
-| [observer.scenarios.ts](../../../chrome-extension/tests/observer.scenarios.ts) | Game fixtures, observer/reference parity, lifecycle, bridge and timing assertions |
-| [observer.test.mjs](../../../chrome-extension/tests/observer.test.mjs) | Vite-based in-memory runner for the TypeScript scenarios |
-| [overlay.test.mjs](../../../chrome-extension/tests/overlay.test.mjs) | Minimal-DOM UI tests, message validation and packaged-bridge integration |
-| [README](../../../chrome-extension/openfront-overlay/README.md) | Installation, feature overview and manual Chrome verification |
-| [CLIENT_DOM.md](../../../chrome-extension/CLIENT_DOM.md) | Extension-owned DOM patterns and Lit rerender handling |
+| Source                                                                                    | What to find there                                                                                                     |
+| ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| [manifest.json](../../../chrome-extension/openfront-overlay/manifest.json)                | Supported origins, Chrome minimum, declarative script worlds and injection timing                                      |
+| [src/Main.ts](../../../chrome-extension/src/Main.ts)                                      | Game discovery, bridge messages, polling, projections, silo/transport/pirate detection and teardown                    |
+| [src/Observer.ts](../../../chrome-extension/src/Observer.ts)                              | Remote client interfaces, API guards, observation, recommendation, incremental map indexing and update hook            |
+| [src/Strategy.ts](../../../chrome-extension/src/Strategy.ts)                              | Read-only economy/defense plans, exact worker prices, bounded placement probes, threat evidence and async invalidation |
+| [content.js](../../../chrome-extension/openfront-overlay/content.js)                      | Isolated UI, message validation, controls, warning styles, marker rendering and native troop-bar integration           |
+| [English messages](../../../chrome-extension/openfront-overlay/_locales/en/messages.json) | Chrome i18n labels and warning text                                                                                    |
+| [build.mjs](../../../chrome-extension/src/build.mjs)                                      | Standalone bridge build, enum extraction and runtime dependency allowlist                                              |
+| [inject.js](../../../chrome-extension/openfront-overlay/inject.js)                        | Generated MAIN-world bundle shipped to Chrome; never edit manually                                                     |
+| [observer.scenarios.ts](../../../chrome-extension/tests/observer.scenarios.ts)            | Game fixtures, observer/reference parity, lifecycle, bridge and timing assertions                                      |
+| [observer.test.mjs](../../../chrome-extension/tests/observer.test.mjs)                    | Vite-based in-memory runner for the TypeScript scenarios                                                               |
+| [overlay.test.mjs](../../../chrome-extension/tests/overlay.test.mjs)                      | Minimal-DOM UI tests, message validation and packaged-bridge integration                                               |
+| [README](../../../chrome-extension/openfront-overlay/README.md)                           | Installation, feature overview and manual Chrome verification                                                          |
+| [CLIENT_DOM.md](../../../chrome-extension/CLIENT_DOM.md)                                  | Extension-owned DOM patterns and Lit rerender handling                                                                 |
 
 For game-client API evidence, follow:
 
@@ -91,15 +92,16 @@ The content script checks source, origin, and relevant payload shapes before
 rendering. Same-origin page code can still spoof these messages: this is a
 display boundary, not authentication.
 
-| Message | Direction and purpose |
-| --- | --- |
-| `OPENFRONT_OVERLAY_CONTROL` | UI to bridge: explicit boolean `enabled`, optional positive `requestId` |
-| `OPENFRONT_OVERLAY_STATE` | Bridge to UI: status, raw troops, advisor snapshot, `controlId`, silo markers, live `playerLists` |
-| `OPENFRONT_OVERLAY_SILOS` | Bridge to UI: changed projected silo marker array |
-| `OPENFRONT_OVERLAY_PIRATE_WARSHIPS` | Bridge to UI: changed projected pirate marker array |
-| `OPENFRONT_OVERLAY_FIRST_ENEMY_SILO` | Bridge to UI: first observed enemy silo in this game |
-| `OPENFRONT_OVERLAY_INCOMING_BOAT` | Bridge to UI: newly observed hostile transport targeting our territory |
-| `OPENFRONT_OVERLAY_PIRATE_ALERT` | Bridge to UI: a tracked warship crosses the capture threshold |
+| Message                              | Direction and purpose                                                                             |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| `OPENFRONT_OVERLAY_CONTROL`          | UI to bridge: explicit boolean `enabled`, optional positive `requestId`                           |
+| `OPENFRONT_OVERLAY_STATE`            | Bridge to UI: status, raw troops, advisor snapshot, `controlId`, silo markers, live `playerLists` |
+| `OPENFRONT_OVERLAY_BUILDS`           | Bridge to UI: changed projected, labeled build placements with `controlId`                        |
+| `OPENFRONT_OVERLAY_SILOS`            | Bridge to UI: changed projected silo marker array                                                 |
+| `OPENFRONT_OVERLAY_PIRATE_WARSHIPS`  | Bridge to UI: changed projected pirate marker array                                               |
+| `OPENFRONT_OVERLAY_FIRST_ENEMY_SILO` | Bridge to UI: first observed enemy silo in this game                                              |
+| `OPENFRONT_OVERLAY_INCOMING_BOAT`    | Bridge to UI: newly observed hostile transport targeting our territory                            |
+| `OPENFRONT_OVERLAY_PIRATE_ALERT`     | Bridge to UI: a tracked warship crosses the capture threshold                                     |
 
 Keep producers, consumers, validation, fixtures and tests aligned when changing
 a payload. `requestId`/`controlId` prevents stale acknowledgements from reversing
@@ -111,6 +113,18 @@ observed betraying neighbors; an empty array means no qualifying players,
 while `null` means the list is unavailable (for example during frontier catchup).
 Test list refreshes with an unchanged advisor snapshot: UI render deduplication
 must include independently updated list data.
+
+Economy/defense `strategy` is also independent snapshot data: include it in UI
+deduplication and validate its exact gold strings, plan states and threat kinds.
+The client config's `unitInfo()` exposes construction metadata, not build costs;
+cost functions live in the engine's `EngineConfig`. Read actual prices and
+location eligibility through `myPlayer().buildables()` (a read-only worker
+query). Never copy userscript fallback formulas or send gameplay intents.
+Affordability alone is not location validity, and saving/paused plans must not
+produce placement markers. Build queries need bounded probes, timeouts and
+generation checks after every await so stale replies cannot resume work or
+publish after disable, replacement, catchup or rollback. Use the existing
+incremental index; do not scan the full map for each build recommendation.
 
 The panel uses a shadow root. Map markers and transient warnings instead use
 extension-owned fixed layers on the page. Only the interactive panel should
@@ -182,6 +196,10 @@ the local `translateText()`/cached `advisorLabels`. Add new cached keys to
 `advisorKeys`. Do not import game translation helpers or put extension labels
 in the game's language files. Missing locale entries fail explicitly at startup.
 Cache labels before Chrome extension reload can invalidate live tab APIs.
+Chrome locale keys may contain only ASCII letters, digits and underscores.
+Map hyphenated payload states to valid locale keys explicitly; the MV3 manifest
+test checks key syntax because a permissive i18n test double cannot prove Chrome
+will load the locale.
 
 Example: changing the silo label requires its locale entry and relevant UI
 assertions, not an edit to `inject.js` or a game build.
@@ -266,7 +284,7 @@ compatibility with the currently deployed client.
 Manual smoke checks:
 
 1. Confirm no Chrome extension errors and exactly one `#openfront-advisor-ui`.
-2. Enter a game: advice is initially off; activate, including during spawn.
+2. Enter a game: advice is initially on; test disable/reactivate during spawn.
    Compare phase/neighbors and troop-bar color with the game state.
 3. Verify both checkboxes appear only expanded and default checked. Test
    marker/warning gating, camera pan/zoom, off-screen arrows and click-through.
@@ -378,8 +396,8 @@ substitute manually injected scripts for a genuinely loaded extension.
    the modal, inspect fresh state and the actual visible button; a targeted DOM
    `.click()` through `evaluate_script` is a fallback for an ineffective tool
    click, not a reason to call private game-start APIs.
-4. Confirm advice starts minimized/off. Click **Activate** and verify the
-   expanded panel, both checked monitoring options, and the bridge status.
+4. Confirm advice starts expanded/on. Disable, then click **Activate** and verify the
+   expanded panel, checked monitoring options, and the bridge status.
    `Waiting for your player to spawn.` is valid during spawn, but not proof
    that live analysis works.
 5. If the agreed test includes analysis, select a valid, unowned land tile
@@ -407,16 +425,16 @@ Upstream setup references:
 [VS Code configuration](https://github.com/ChromeDevTools/chrome-devtools-mcp/blob/main/docs/client-configurations.md)
 and [connecting to running Chrome](https://github.com/ChromeDevTools/chrome-devtools-mcp/blob/main/docs/advanced-usage.md).
 
-| Symptom | First checks |
-| --- | --- |
-| Overlay missing | Manifest match, unpacked directory, missing translation, console initialization error, reload extension and tab |
-| Isolated script cannot read game properties | Read them in MAIN-world Main.ts and send validated display data |
-| Unsupported client or missing HUD anchor | Compare remote API/markup with GameView, BuildMenu and ControlPanel; do not silently invent replacements |
-| New silo delayed, but camera tracking smooth | 500 ms discovery cadence versus animation-frame projection |
-| Markers lag during camera movement | Frame scheduling, world-to-screen projection, changed-array publishing, then UI positioning |
-| Markers absent | Advisor activation, checkbox, valid local player, enemy/active filters, transform validity and console diagnostics |
-| Green bar disappears after a Lit update | Scoped mutation observers, panel replacement and idempotent resynchronization |
-| Reload has no effect/context invalidated | Reload the game tab too; live tabs retain scripts from the prior extension instance |
+| Symptom                                      | First checks                                                                                                       |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Overlay missing                              | Manifest match, unpacked directory, missing translation, console initialization error, reload extension and tab    |
+| Isolated script cannot read game properties  | Read them in MAIN-world Main.ts and send validated display data                                                    |
+| Unsupported client or missing HUD anchor     | Compare remote API/markup with GameView, BuildMenu and ControlPanel; do not silently invent replacements           |
+| New silo delayed, but camera tracking smooth | 500 ms discovery cadence versus animation-frame projection                                                         |
+| Markers lag during camera movement           | Frame scheduling, world-to-screen projection, changed-array publishing, then UI positioning                        |
+| Markers absent                               | Advisor activation, checkbox, valid local player, enemy/active filters, transform validity and console diagnostics |
+| Green bar disappears after a Lit update      | Scoped mutation observers, panel replacement and idempotent resynchronization                                      |
+| Reload has no effect/context invalidated     | Reload the game tab too; live tabs retain scripts from the prior extension instance                                |
 
 ## Keep this skill improving
 
