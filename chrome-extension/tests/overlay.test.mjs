@@ -214,6 +214,231 @@ function activeAdvisor(extra = {}) {
   };
 }
 
+function strategySnapshot(extra = {}) {
+  return {
+    status: "ready",
+    error: null,
+    threatError: null,
+    threats: [],
+    builds: [
+      {
+        type: "City",
+        reason: "foundation",
+        cost: "125000",
+        shortfall: "0",
+        affordable: true,
+        paused: false,
+        placement: "valid",
+        tile: 123,
+        constructionSeconds: 2,
+      },
+    ],
+    ...extra,
+  };
+}
+
+await test("strategy cards refresh independently with exact gold, safe text and separate threat levels", () => {
+  const { context, elements, send } = createContext();
+  runInNewContext(source, context);
+  const snapshot = {
+    status: "playing",
+    troops: 42000,
+    advisor: activeAdvisor(),
+  };
+  const text = () =>
+    descendants(elements[0])
+      .map((e) => e.textContent)
+      .join("\n");
+  send({
+    ...snapshot,
+    strategy: strategySnapshot({
+      threats: [
+        { kind: "attack", id: 2, name: "<img src=x>", troops: 1230 },
+        { kind: "neighbor", id: 3, name: "Neighbor", troops: 10000 },
+        { kind: "capability", id: 4, name: "Silo owner", troops: 0 },
+        { kind: "missile", id: 7, name: "Launcher", troops: 0 },
+      ],
+    }),
+  });
+  assert.match(text(), /City affordable now/);
+  assert.match(
+    text(),
+    /Human attack underway: <img src=x> - 123 committed troops/,
+  );
+  assert.match(text(), /No attack implied/);
+  assert.match(text(), /No launch implied/);
+  assert.match(text(), /blast area overlaps your territory/);
+  assert.equal(
+    descendants(elements[0]).some((e) => e.tag === "img"),
+    false,
+  );
+  const saving = strategySnapshot();
+  Object.assign(saving.builds[0], {
+    affordable: false,
+    shortfall: "1",
+    placement: "saving",
+    tile: null,
+  });
+  send({ ...snapshot, strategy: saving });
+  assert.match(text(), /need 1 more/);
+  assert.doesNotMatch(text(), /City affordable now/);
+  const paused = strategySnapshot();
+  Object.assign(paused.builds[0], {
+    paused: true,
+    placement: "paused",
+    tile: null,
+  });
+  send({ ...snapshot, strategy: paused });
+  assert.match(text(), /Hold economy spending/);
+  const noPlacement = strategySnapshot();
+  Object.assign(noPlacement.builds[0], { placement: "not-found", tile: null });
+  send({ ...snapshot, strategy: noPlacement });
+  assert.ok(text().includes(messages.placement_not_found.message));
+  send({
+    ...snapshot,
+    strategy: strategySnapshot({
+      status: "unavailable",
+      error: "Missing player.buildables().",
+      builds: [],
+      threats: [{ kind: "attack", id: 2, name: "Human", troops: 1000 }],
+    }),
+  });
+  assert.match(text(), /Advice unavailable/);
+  assert.match(text(), /Missing player.buildables/);
+  assert.match(
+    text(),
+    /Human attack underway/,
+    "cost failure does not hide detected threats",
+  );
+  send({
+    ...snapshot,
+    strategy: strategySnapshot({ status: "checking", builds: [] }),
+  });
+  assert.doesNotMatch(
+    text(),
+    /No observed human attacks/,
+    "indexing is not evidence that the game is safe",
+  );
+});
+
+await test("strategy payload validation rejects malformed costs, forged valid placements and unknown kinds", () => {
+  const { context, elements, send, errors } = createContext();
+  runInNewContext(source, context);
+  const snapshot = {
+    status: "playing",
+    troops: 42000,
+    advisor: activeAdvisor(),
+  };
+  send({ ...snapshot, strategy: strategySnapshot() });
+  const bad = [
+    { status: "success" },
+    { error: 123 },
+    { threats: [{ kind: "launch", id: 1, name: "Name", troops: 0 }] },
+    { threats: [{ kind: "attack", id: 1, name: "x".repeat(201), troops: 0 }] },
+    { builds: [{ ...strategySnapshot().builds[0], cost: "1e9" }] },
+    { builds: [{ ...strategySnapshot().builds[0], cost: "-1" }] },
+    { builds: [{ ...strategySnapshot().builds[0], type: "__proto__" }] },
+    { builds: [{ ...strategySnapshot().builds[0], tile: null }] },
+    { builds: [{ ...strategySnapshot().builds[0], affordable: false }] },
+    { builds: [{ ...strategySnapshot().builds[0], paused: true }] },
+    { builds: [{ ...strategySnapshot().builds[0], constructionSeconds: -1 }] },
+  ];
+  for (const extra of bad)
+    send({ ...snapshot, strategy: strategySnapshot(extra) });
+  assert.equal(errors.length, bad.length);
+  assert.ok(
+    descendants(elements[0]).some((e) =>
+      e.textContent.includes("City affordable now"),
+    ),
+  );
+  send({ ...snapshot, strategy: null });
+  assert.equal(
+    descendants(elements[0]).some((e) =>
+      e.textContent.includes("City affordable now"),
+    ),
+    false,
+  );
+});
+
+await test("build placements use a labeled click-through layer, track position and clear on disable", () => {
+  const { context, elements, send, controls, errors } = createContext();
+  context.document.body.classList.add("in-game");
+  runInNewContext(source, context);
+  send({
+    status: "playing",
+    troops: 42000,
+    advisor: activeAdvisor(),
+    strategy: strategySnapshot(),
+  });
+  const layer = elements.find((e) => e.id === "openfront-build-placements");
+  assert.equal(layer.style.pointerEvents, "none");
+  assert.equal(layer.style.zIndex, "2147483646");
+  const markers = [{ id: 0, type: "City", x: 200, y: 200, radius: 12 }];
+  const show = (buildMarkers, extra = {}) =>
+    send({
+      type: "OPENFRONT_OVERLAY_BUILDS",
+      buildMarkers,
+      controlId: 0,
+      ...extra,
+    });
+  show(markers);
+  let ring = descendants(layer).find(
+    (e) => e.dataset.openfrontBuildPlacement === "0",
+  );
+  assert.equal(ring.style.left, "200px");
+  assert.ok(
+    descendants(ring).some((e) => e.textContent === messages.buildCity.message),
+  );
+  show([{ ...markers[0], x: 300, y: 250 }]);
+  assert.equal(ring.style.left, "300px");
+  assert.equal(ring.style.top, "250px");
+  show([{ ...markers[0], type: "Unknown" }]);
+  assert.equal(errors.length, 1);
+  const collapse = descendants(elements[0]).find((e) => e.tag === "button");
+  collapse.listeners.click();
+  assert.equal(controls.at(-1).data.enabled, false);
+  assert.equal(
+    descendants(layer).some((e) => e.dataset.openfrontBuildPlacement === "0"),
+    false,
+  );
+  show(markers);
+  assert.equal(
+    descendants(layer).some((e) => e.dataset.openfrontBuildPlacement === "0"),
+    false,
+    "late markers cannot revive disabled UI",
+  );
+});
+
+await test("human and missile warnings are localized, validated, activation-gated and cleared on exit", () => {
+  const { context, elements, send, errors } = createContext();
+  runInNewContext(source, context);
+  send({ type: "OPENFRONT_OVERLAY_HUMAN_ATTACK", playerNames: ["Enemy"] });
+  assert.equal(
+    elements.some((e) => e.id === "openfront-human-attack-warning"),
+    false,
+  );
+  send({ status: "playing", troops: 42000, advisor: activeAdvisor() });
+  send({ type: "OPENFRONT_OVERLAY_HUMAN_ATTACK", playerNames: ["Enemy"] });
+  send({ type: "OPENFRONT_OVERLAY_MISSILE_THREAT", playerNames: ["Nuker"] });
+  const attack = elements.find(
+    (e) => e.id === "openfront-human-attack-warning",
+  );
+  const missile = elements.find(
+    (e) => e.id === "openfront-missile-threat-warning",
+  );
+  assert.equal(
+    attack.textContent,
+    messages.humanAttackWarning.message.replace("{name}", "Enemy"),
+  );
+  assert.match(missile.textContent, /may not finish in time/);
+  assert.equal(attack.style.pointerEvents, "none");
+  send({ type: "OPENFRONT_OVERLAY_HUMAN_ATTACK", playerNames: [7] });
+  assert.equal(errors.length, 1);
+  send({ status: "idle", troops: null });
+  assert.equal(attack.style.display, "none");
+  assert.equal(missile.style.display, "none");
+});
+
 await test("live player lists follow stronger neighbors and refresh without advisor changes", () => {
   const { context, elements, send } = createContext();
   runInNewContext(source, context);
@@ -359,6 +584,8 @@ await test("malformed and foreign player lists cannot replace displayed lists", 
 });
 
 await test("localized MV3 manifest loads only the advisor and packaged bridge", () => {
+  for (const key of Object.keys(messages))
+    assert.match(key, /^[A-Za-z0-9_]+$/, `Invalid Chrome locale key: ${key}`);
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.default_locale, "en");
   assert.equal(manifest.description, "__MSG_extensionDescription__");
@@ -394,7 +621,7 @@ for (const readyState of ["loading", "interactive", "complete"]) {
       context.document.readyState = "interactive";
       listeners[0].callback();
     }
-    assert.equal(elements.length, 4);
+    assert.equal(elements.length, 5);
     assert.equal(elements[0].id, "openfront-advisor-ui");
     assert.equal(elements[0].dataset.minimized, "true");
     assert.equal(elements[1].id, "openfront-enemy-silos");
@@ -409,7 +636,7 @@ for (const readyState of ["loading", "interactive", "complete"]) {
     assert.match(style.textContent, /bottom: calc\(16px/);
     assert.doesNotMatch(style.textContent, /right: calc/);
     runInNewContext(source, context);
-    assert.equal(elements.length, 4);
+    assert.equal(elements.length, 5);
   });
 }
 
@@ -1410,7 +1637,7 @@ await test("all phases and neighbor troop counts display correctly", () => {
         texts.some((text) => text.startsWith("Incoming attacks:")),
         false,
       );
-      assert.equal(elements.length, 4);
+      assert.equal(elements.length, 5);
     }
   }
 });

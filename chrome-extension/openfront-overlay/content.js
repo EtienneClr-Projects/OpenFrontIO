@@ -7,6 +7,13 @@
   const abandonedRichWarningId = "openfront-abandoned-rich-warning";
   const inactiveNeighborWarningId = "openfront-inactive-neighbor-warning";
   const traitorNeighborWarningId = "openfront-traitor-neighbor-warning";
+  const buildLabels = {
+    City: "buildCity",
+    Port: "buildPort",
+    Factory: "buildFactory",
+    "Defense Post": "buildDefensePost",
+    "SAM Launcher": "buildSAM",
+  };
   const reserveMarkerSelector = '[data-openfront-reserve-marker="42"]';
   let state = { status: "idle", troops: null };
   let findEnemySilos = true;
@@ -52,9 +59,33 @@
       layer: null,
       elements: new Map(),
     },
+    build: {
+      layerId: "openfront-build-placements",
+      datasetKey: "openfrontBuildPlacement",
+      arrowKey: "openfrontBuildPlacementArrow",
+      animation: "openfront-build-pulse",
+      color: "#86efac",
+      glow: "#16a34a",
+      circle: true,
+      isEnabled: () => enabled && advisor.status === "active",
+      layer: null,
+      elements: new Map(),
+    },
   };
   // Warnings naming players: message type -> label, layer id and position.
   const playerWarnings = {
+    OPENFRONT_OVERLAY_HUMAN_ATTACK: {
+      id: "openfront-human-attack-warning",
+      label: "humanAttackWarning",
+      top: "30%",
+      isEnabled: () => enabled,
+    },
+    OPENFRONT_OVERLAY_MISSILE_THREAT: {
+      id: "openfront-missile-threat-warning",
+      label: "missileThreatWarning",
+      top: "40%",
+      isEnabled: () => enabled,
+    },
     OPENFRONT_OVERLAY_RICH_PLAYER: {
       id: richPlayerWarningId,
       label: "richPlayerWarning",
@@ -137,6 +168,38 @@
     "phase_contested",
     "phase_nuclear",
     "phase_endgame",
+    "economyAdvisor",
+    "defenseAdvisor",
+    "strategyChecking",
+    "strategyUnavailable",
+    "strategyNoBuild",
+    "strategyNoThreats",
+    "buildCity",
+    "buildPort",
+    "buildFactory",
+    "buildDefensePost",
+    "buildSAM",
+    "buildAffordable",
+    "buildSaving",
+    "buildPaused",
+    "placement_checking",
+    "placement_valid",
+    "placement_not_found",
+    "constructionTime",
+    "constructionUnknown",
+    "samPrecaution",
+    "reason_foundation",
+    "reason_capacity",
+    "reason_trade",
+    "reason_production",
+    "reason_frontier",
+    "reason_coverage",
+    "threat_attack",
+    "threat_neighbor",
+    "threat_capability",
+    "threat_missile",
+    "humanAttackWarning",
+    "missileThreatWarning",
   ];
   const advisorLabels = Object.fromEntries(
     advisorKeys.map((key) => [key, translateText(key)]),
@@ -159,6 +222,7 @@
   let advisor = defaultAdvisor;
   const emptyPlayerLists = { richPlayers: [], traitorNeighbors: [] };
   let playerLists = emptyPlayerLists;
+  let strategy = null;
   let displayedRecommendation = null;
 
   function validAdvisor(value) {
@@ -234,6 +298,65 @@
       ids.add(player.id);
       return true;
     });
+  }
+
+  function validStrategy(value) {
+    if (value === null) return true;
+    const text = (v) =>
+      v === null || (typeof v === "string" && v.length <= 240);
+    const gold = (v) =>
+      typeof v === "string" && /^(0|[1-9][0-9]{0,79})$/.test(v);
+    return (
+      value &&
+      typeof value === "object" &&
+      ["checking", "ready", "unavailable"].includes(value.status) &&
+      text(value.error) &&
+      text(value.threatError) &&
+      Array.isArray(value.threats) &&
+      value.threats.length <= 512 &&
+      value.threats.every(
+        (t) =>
+          t &&
+          ["attack", "neighbor", "capability", "missile"].includes(t.kind) &&
+          Number.isSafeInteger(t.id) &&
+          t.id >= 0 &&
+          typeof t.name === "string" &&
+          t.name.length <= 200 &&
+          Number.isSafeInteger(t.troops) &&
+          t.troops >= 0,
+      ) &&
+      Array.isArray(value.builds) &&
+      value.builds.length <= 3 &&
+      new Set(value.builds.map((b) => b?.type)).size === value.builds.length &&
+      value.builds.every(
+        (b) =>
+          b &&
+          Object.hasOwn(buildLabels, b.type) &&
+          [
+            "foundation",
+            "capacity",
+            "trade",
+            "production",
+            "frontier",
+            "coverage",
+          ].includes(b.reason) &&
+          gold(b.cost) &&
+          gold(b.shortfall) &&
+          typeof b.affordable === "boolean" &&
+          typeof b.paused === "boolean" &&
+          ["saving", "paused", "checking", "valid", "not-found"].includes(
+            b.placement,
+          ) &&
+          (b.tile === null || (Number.isSafeInteger(b.tile) && b.tile >= 0)) &&
+          (b.placement === "valid"
+            ? b.tile !== null && b.affordable && !b.paused
+            : b.tile === null) &&
+          (b.affordable ? b.shortfall === "0" : BigInt(b.shortfall) > 0n) &&
+          (b.constructionSeconds === null ||
+            (Number.isFinite(b.constructionSeconds) &&
+              b.constructionSeconds >= 0)),
+      )
+    );
   }
 
   function validMarkers(value, maxRadius = 100) {
@@ -333,6 +456,7 @@
       document.body.appendChild(warning);
     }
     warning.textContent = text;
+    warning.style.display = "block";
     warning.style.animation = "none";
     void warning.offsetWidth;
     warning.style.animation =
@@ -418,8 +542,22 @@
           "drop-shadow(0 0 1px #fff) drop-shadow(0 0 3px #111)";
         arrow.style.pointerEvents = "none";
         ring.arrow = arrow;
+        if (kind === "build") {
+          ring.label = node("span", undefined, ring);
+          ring.label.style.position = "absolute";
+          ring.label.style.bottom = "100%";
+          ring.label.style.left = "50%";
+          ring.label.style.transform = "translateX(-50%)";
+          ring.label.style.whiteSpace = "nowrap";
+          ring.label.style.background = "#0a1628f2";
+          ring.label.style.color = "#fff";
+          ring.label.style.font = "700 12px/1.5 system-ui, sans-serif";
+          ring.label.style.padding = "2px 5px";
+        }
         config.elements.set(marker.id, ring);
       }
+      if (kind === "build")
+        ring.label.textContent = advisorLabels[buildLabels[marker.type]];
       const position = projectSiloMarker(marker);
       ring.dataset.offscreen = String(position.offscreen);
       ring.style.left = `${position.x}px`;
@@ -467,6 +605,7 @@
       advisor,
       troops: state.troops,
       playerLists,
+      strategy,
     });
     if (signature === lastDetails) return;
     lastDetails = signature;
@@ -516,6 +655,126 @@
         for (const player of players) node("li", player.name, playersList);
       }
     }
+    renderStrategy();
+  }
+
+  function label(key, values = {}) {
+    return Object.entries(values).reduce(
+      (text, [name, value]) => text.replaceAll(`{${name}}`, String(value)),
+      advisorLabels[key],
+    );
+  }
+
+  function renderBuild(build, parent) {
+    const card = node("div", undefined, parent);
+    card.className = "strategy-card";
+    card.dataset.urgent = String(
+      Boolean(build.paused) ||
+        ["Defense Post", "SAM Launcher"].includes(build.type),
+    );
+    const values = {
+      unit: advisorLabels[buildLabels[build.type]],
+      cost: troopFormatter.format(BigInt(build.cost)),
+      missing: troopFormatter.format(BigInt(build.shortfall)),
+    };
+    node(
+      "strong",
+      label(
+        build.paused
+          ? "buildPaused"
+          : build.affordable
+            ? "buildAffordable"
+            : "buildSaving",
+        values,
+      ),
+      card,
+    );
+    node("p", advisorLabels[`reason_${build.reason}`], card);
+    if (build.affordable && !build.paused)
+      node(
+        "p",
+        advisorLabels[
+          build.placement === "not-found"
+            ? "placement_not_found"
+            : `placement_${build.placement}`
+        ],
+        card,
+      );
+    node(
+      "p",
+      build.constructionSeconds === null
+        ? advisorLabels.constructionUnknown
+        : label("constructionTime", { seconds: build.constructionSeconds }),
+      card,
+    );
+    if (build.type === "SAM Launcher")
+      node("p", advisorLabels.samPrecaution, card);
+  }
+
+  function renderStrategy() {
+    if (!strategy) return;
+    node("h3", advisorLabels.economyAdvisor, panel.details);
+    const economy = strategy.builds.find((b) =>
+      ["City", "Port", "Factory"].includes(b.type),
+    );
+    if (economy) renderBuild(economy, panel.details);
+    else
+      node(
+        "p",
+        advisorLabels[
+          strategy.status === "ready"
+            ? "strategyNoBuild"
+            : strategy.status === "checking"
+              ? "strategyChecking"
+              : "strategyUnavailable"
+        ],
+        panel.details,
+      );
+    if (strategy.error) node("p", strategy.error, panel.details);
+    node("h3", advisorLabels.defenseAdvisor, panel.details);
+    if (strategy.threatError) {
+      node("p", advisorLabels.strategyUnavailable, panel.details);
+      node("p", strategy.threatError, panel.details);
+    } else if (strategy.threats.length === 0) {
+      node(
+        "p",
+        advisorLabels[
+          strategy.status === "checking"
+            ? "strategyChecking"
+            : "strategyNoThreats"
+        ],
+        panel.details,
+      );
+    }
+
+    for (const threat of strategy.threats) {
+      const item = node(
+        "p",
+        label(`threat_${threat.kind}`, {
+          name: threat.name,
+          troops: troopFormatter.format(threat.troops / 10),
+        }),
+        panel.details,
+      );
+      item.dataset.urgent = String(
+        threat.kind === "attack" || threat.kind === "missile",
+      );
+    }
+    for (const build of strategy.builds.filter((b) =>
+      ["Defense Post", "SAM Launcher"].includes(b.type),
+    ))
+      renderBuild(build, panel.details);
+  }
+
+  function clearStrategyDecorations() {
+    syncMarkers("build", []);
+    for (const id of [
+      "openfront-human-attack-warning",
+      "openfront-missile-threat-warning",
+    ]) {
+      const warning = document.getElementById(id);
+      if (warning) warning.style.display = "none";
+    }
   }
 
   function mountAdvisor() {
@@ -542,6 +801,7 @@
       li.friendly { color: #86efac; }
       li.hostile { color: #fca5a5; }
       [data-urgent="true"] { border-left: 3px solid #f6a34b; padding-left: 8px; }
+      .strategy-card { border: 1px solid #526985; border-radius: 6px; margin: 8px 0; padding: 8px; }
       button:focus-visible { outline: 2px solid #f6cf64; outline-offset: 2px; }
       .silo-visibility { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; cursor: pointer; }
       .silo-visibility input { flex: 0 0 auto; accent-color: #ff8c00; }
@@ -624,6 +884,9 @@
       enabled = !enabled;
       pendingRequest = ++requestId;
       if (!enabled) displayedRecommendation = null;
+      if (!enabled) {
+        clearStrategyDecorations();
+      }
       renderAdvisor();
       syncHudColor();
       window.postMessage(
@@ -769,11 +1032,31 @@
       removeReserveMarkers(hudControlPanel);
     }
     hudControlPanel = null;
+    clearStrategyDecorations();
   }
 
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== window.location.origin)
       return;
+    if (event.data?.type === "OPENFRONT_OVERLAY_BUILDS") {
+      const markers = event.data.buildMarkers;
+      if (
+        !validMarkers(markers) ||
+        markers.length > 3 ||
+        !markers.every((m) => Object.hasOwn(buildLabels, m.type)) ||
+        !Number.isSafeInteger(event.data.controlId) ||
+        event.data.controlId < 0
+      ) {
+        console.error("[OpenFront Overlay] Invalid build placement message.");
+        return;
+      }
+      if (event.data.controlId < requestId) return;
+      syncMarkers(
+        "build",
+        enabled && document.body?.classList.contains("in-game") ? markers : [],
+      );
+      return;
+    }
     if (event.data?.type === "OPENFRONT_OVERLAY_FIRST_ENEMY_SILO") {
       if (findEnemySilos)
         showWarning(enemySiloWarningId, advisorLabels.firstEnemySiloWarning);
@@ -877,6 +1160,13 @@
     }
     const lists = event.data.playerLists;
     if (
+      event.data.strategy !== undefined &&
+      !validStrategy(event.data.strategy)
+    ) {
+      console.error("[OpenFront Overlay] Invalid strategy message.");
+      return;
+    }
+    if (
       lists !== undefined &&
       (!lists ||
         typeof lists !== "object" ||
@@ -910,6 +1200,16 @@
     playerLists = lists ?? emptyPlayerLists;
     pendingRequest = null;
     enabled = advisor.enabled;
+    strategy =
+      enabled && status === "playing" ? (event.data.strategy ?? null) : null;
+    if (
+      !enabled ||
+      !strategy ||
+      strategy?.status === "checking" ||
+      strategy?.status === "unavailable"
+    )
+      syncMarkers("build", []);
+    if (!enabled || status !== "playing") clearStrategyDecorations();
     if (status === "idle") {
       enabled = false;
       advisor = defaultAdvisor;
@@ -935,6 +1235,7 @@
     createMarkerLayer("silo");
     createMarkerLayer("pirate");
     createMarkerLayer("abandoned");
+    createMarkerLayer("build");
     startHudColorSync();
     console.info("[OpenFront Overlay] Advisor overlay mounted.");
   }

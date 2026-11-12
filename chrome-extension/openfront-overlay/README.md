@@ -41,9 +41,72 @@ disabled activation button.
 Only the panel captures clicks; the rest
 of the page remains available to the game's controls.
 
-This milestone does **not** include automated actions, expansion/build advice,
-worker eligibility queries, nuclear/transport alert cards, map focus, or
-snooze/dismiss. Nuclear evidence can still affect the phase label.
+There are no automated actions, map focus, or snooze/dismiss controls.
+Economy and defense guidance below uses read-only worker queries; it never
+sends build or attack intents.
+
+## Economy and defense advisors
+
+The expanded panel includes one economic recommendation and, when warranted,
+Defense Post and SAM recommendations. A single plan drives both each card and
+its labeled green map marker; markers are click-through and follow the camera.
+Disabling the advisor, leaving the game, catchup, or losing a suggested tile
+clears these placements. Nothing is built automatically.
+
+Economy recommendations are explicitly heuristic, not an optimal build order:
+
+- Establish a first City; favor another City at 80% or more troop capacity.
+- Otherwise balance coastal Ports with Factories, falling back to capacity.
+- Exclude disabled building types and types already under construction.
+- Pause economy spending during incoming attacks, overwhelming hostile-human
+  frontier pressure, or missiles threatening your territory.
+
+Cards distinguish **affordable**, **recommended**, and **validated placement**.
+Gold and costs use exact integer arithmetic, with the current price from
+`myPlayer().buildables()`, not copied price formulas. An unaffordable card shows
+the exact remaining gold before compact formatting. Affordability includes
+equality with the price; there is no hidden gold reserve. Saving or paused
+recommendations have no location marker. An affordable building without a valid
+sampled placement is explicitly labeled as such.
+
+Defense distinguishes four kinds of evidence:
+
+- A nonretreating hostile **human attack underway**, with attacker and troops.
+  Tribes and nations are not mislabeled as human attackers.
+- A hostile human neighbor with at least twice your available troops:
+  **potential danger**, not evidence that they attacked.
+- An observed enemy silo, including construction: **nuclear precaution**, not
+  proof of a launch. Wealth alone is not labeled a launch or nuclear capability.
+- An observed atom/hydrogen bomb or MIRV warhead whose blast overlaps your land,
+  or a MIRV targeting your territory: **missile threat**.
+
+Actual teammates and temporary friendlies are excluded from these hostile
+threat categories. New human attackers and newly threatening missile IDs raise
+short warnings; repeated polling does not repeat the same warning. Evidence is
+limited to what the client exposes while the advisor is active.
+
+Defense Post candidates are set back at least three tiles from sampled
+threatening frontiers, within the configured protection radius, and avoid
+nearby existing posts. SAM candidates prioritize economic infrastructure
+outside completed SAM positional coverage, using configured ranges and
+conservative coverage during upgrades. This is not a simulation of interception:
+cooldowns, flight paths and saturation still matter. Construction times are
+shown when available, and SAM cards explicitly warn that a new launcher may not
+finish before impact.
+
+Threats refresh every 500 ms. Build scans run at most once per 1.5 seconds, with
+one price query and at most three location probes per recommendation (ten total
+queries maximum). Candidate generation reuses the incremental map index rather
+than rescanning the map. Defense search considers up to three threatening
+players and 256 owned tiles. Later scans rotate through sampled sites.
+Only worker-approved, currently owned locations are marked. These are recent
+checks, not a reservation: the game can change before you build.
+
+Missing APIs, rejected queries, and three-second query timeouts display an
+explicit diagnostic rather than invented prices or valid-looking locations.
+Build-query failures do not hide separately observed threats or disable existing
+troop guidance. Late replies after disable, game replacement, rollback, or
+catchup cannot restore old plans.
 
 ## Push indicator
 
@@ -67,7 +130,7 @@ local player or a friendly are marked with orange triangles when **Find enemy
 silos** is checked (the default). Unchecking it hides the triangles and
 disables the first-silo warning. The markers match the silo icon's pointed
 silhouette, follow the map camera and zoom, and do not intercept clicks or send
-gameplay actions. They remain visible while the advisor panel is minimized.
+gameplay actions. Disabling the advisor also clears the markers.
 While an enemy silo is present, its screen position is checked each animation
 frame; unchanged markers are not resent. When a silo is outside the viewport,
 its triangle moves to the nearest point on the viewport edge along the ray from
@@ -255,8 +318,16 @@ analysis logic and game fixtures. Verify layout and Chrome loading in the browse
    vertical 42% marker; RETAIN or inactive advice should restore its normal color.
 9. Click **Disable** during loading/spawn, then **Activate**; the panel should stay expanded while waiting
    and automatically begin analysis when ready.
-10. Confirm no visible title, read-only legend, checkbox or “Advisor is active”
-    text remains. Finished/error states should collapse with visible diagnostics.
+10. Check the monitoring checkboxes appear only while expanded. A finished game
+    keeps its diagnostic expanded; unsupported/error states collapse.
+11. Compare economy costs with the game's build menu. At exact affordability,
+    confirm the card changes, and that only a validated location gets a labeled
+    green marker. Check spending, construction, capture, and camera pan/zoom.
+12. Check defense evidence separately: a human attack, a stronger neighbor,
+    enemy silo construction, and a missile whose target or blast threatens
+    your land. Confirm no launch warning is inferred from a silo alone.
+13. Disable and reactivate during a pending build query; no old placement should
+    return. Repeat after returning home and starting another game.
 
 Real remote-client gameplay verification is user-run. Automated fixture tests
 are not a substitute for checking compatibility with the deployed client.
