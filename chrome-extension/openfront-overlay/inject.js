@@ -541,6 +541,9 @@ var OpenFrontOverlay = (function(exports) {
 		frontOwnerIds() {
 			return this.snapshot.status === "active" && this.spatial?.ready && this.pending.size === 0 && !this.game.isCatchingUp() ? [...this.spatial.fronts.keys()] : null;
 		}
+		strategyIndex() {
+			return this.frontOwnerIds() === null ? null : this.spatial;
+		}
 		clearIndex() {
 			this.spatial = null;
 			this.pending.clear();
@@ -668,6 +671,420 @@ var OpenFrontOverlay = (function(exports) {
 		}
 	};
 	//#endregion
+	//#region chrome-extension/src/Strategy.ts
+	var economyTypes = [
+		UnitType.City,
+		UnitType.Port,
+		UnitType.Factory
+	];
+	var buildTypes = [
+		...economyTypes,
+		UnitType.DefensePost,
+		UnitType.SAMLauncher
+	];
+	var missiles = [
+		UnitType.AtomBomb,
+		UnitType.HydrogenBomb,
+		UnitType.MIRVWarhead
+	];
+	var SAMPLE_LIMIT = 48;
+	var QUERY_TIMEOUT_MS = 3e3;
+	function goldValue(value) {
+		if (typeof value === "bigint" && value >= 0n && value.toString().length <= 80) return value;
+		if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+		throw new Error("Missing or invalid exact gold amount.");
+	}
+	function positive(value, label) {
+		if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) throw new Error(`Missing or invalid ${label}.`);
+		return value;
+	}
+	function constructing(unit) {
+		if (typeof unit.isUnderConstruction !== "function") throw new Error("Missing unit.isUnderConstruction().");
+		const result = unit.isUnderConstruction();
+		if (typeof result !== "boolean") throw new Error("Invalid construction state.");
+		return result;
+	}
+	function take(values, limit = SAMPLE_LIMIT) {
+		const result = [];
+		for (const value of values) {
+			result.push(value);
+			if (result.length === limit) break;
+		}
+		return result;
+	}
+	var StrategyAdvisor = class {
+		constructor(game, changed) {
+			this.game = game;
+			this.changed = changed;
+			this.snapshot = {
+				status: "checking",
+				error: null,
+				threatError: null,
+				threats: [],
+				builds: []
+			};
+			this.disposed = false;
+			this.generation = 0;
+			this.pending = false;
+			this.timeout = null;
+			this.lastScan = -Infinity;
+			this.lastTick = -1;
+			this.lastError = null;
+			this.revision = "";
+			this.round = 0;
+		}
+		dispose() {
+			this.disposed = true;
+			this.invalidate();
+		}
+		invalidate() {
+			this.cancelScan();
+			this.lastScan = -Infinity;
+			this.snapshot = {
+				status: "checking",
+				error: null,
+				threatError: null,
+				threats: [],
+				builds: []
+			};
+		}
+		cancelScan() {
+			this.generation++;
+			this.pending = false;
+			if (this.timeout !== null) clearTimeout(this.timeout);
+			this.timeout = null;
+		}
+		poll(spatial, now = performance.now()) {
+			try {
+				this.work(spatial, now);
+			} catch (error) {
+				this.cancelScan();
+				this.fail(error);
+				this.snapshot.threatError = this.message(error);
+				this.snapshot.threats = [];
+			}
+		}
+		work(spatial, now) {
+			if (this.disposed) return;
+			const me = this.game.myPlayer();
+			const tick = this.game.ticks();
+			if (!spatial || !me || this.game.isCatchingUp() || this.game.inSpawnPhase() || this.game.gameOver() || !me.isAlive()) {
+				this.invalidate();
+				return;
+			}
+			if (tick < this.lastTick) this.invalidate();
+			this.lastTick = tick;
+			const revision = this.structureRevision(me);
+			if (revision !== this.revision) {
+				this.invalidate();
+				this.revision = revision;
+			}
+			try {
+				this.snapshot.threats = this.readThreats(me, spatial);
+				this.snapshot.threatError = null;
+			} catch (error) {
+				this.report(error);
+				this.snapshot.threats = [];
+				this.snapshot.threatError = this.message(error);
+			}
+			try {
+				this.snapshot.builds = this.reconcile(this.snapshot.builds, me);
+			} catch (error) {
+				this.cancelScan();
+				this.fail(error);
+				return;
+			}
+			if (this.pending || now - this.lastScan < 1500) return;
+			this.lastScan = now;
+			this.pending = true;
+			const generation = ++this.generation;
+			this.timeout = setTimeout(() => {
+				if (generation !== this.generation || this.disposed) return;
+				this.generation++;
+				this.pending = false;
+				this.timeout = null;
+				this.fail(/* @__PURE__ */ new Error("Build query timed out."));
+				this.changed();
+			}, QUERY_TIMEOUT_MS);
+			this.plan(me, spatial, generation).then((builds) => {
+				if (this.disposed || generation !== this.generation) return;
+				if (this.game.isCatchingUp() || this.game.myPlayer() !== me || this.game.ticks() < tick || this.structureRevision(me) !== revision) this.invalidate();
+				else {
+					this.snapshot.threats = this.readThreats(me, spatial);
+					this.snapshot.threatError = null;
+					this.snapshot.builds = this.reconcile(builds, me);
+					this.snapshot.status = "ready";
+					this.snapshot.error = null;
+					this.lastError = null;
+				}
+			}).catch((error) => {
+				if (!this.disposed && generation === this.generation) this.fail(error);
+			}).finally(() => {
+				if (this.disposed || generation !== this.generation) return;
+				if (this.timeout !== null) clearTimeout(this.timeout);
+				this.timeout = null;
+				this.pending = false;
+				this.changed();
+			});
+		}
+		structureRevision(me) {
+			return this.game.units().filter((u) => u.isActive() && u.owner().smallID() === me.smallID() && buildTypes.includes(u.type())).map((u) => `${u.id()}:${u.type()}:${u.tile()}:${u.level?.()}:${u.isUnderConstruction?.()}`).join("|");
+		}
+		reconcile(builds, me) {
+			const gold = goldValue(me.gold?.());
+			const paused = this.pressure(me);
+			return builds.filter((build) => build.type === UnitType.DefensePost ? this.snapshot.threats.some((t) => t.kind === "attack" || t.kind === "neighbor") : build.type === UnitType.SAMLauncher ? this.snapshot.threats.some((t) => t.kind === "capability" || t.kind === "missile") : true).map((build) => {
+				const cost = BigInt(build.cost);
+				const affordable = gold >= cost;
+				const hold = economyTypes.includes(build.type) && paused;
+				const valid = build.tile !== null && this.owned(build.tile, me);
+				return {
+					...build,
+					affordable,
+					paused: hold,
+					shortfall: (cost > gold ? cost - gold : 0n).toString(),
+					tile: affordable && !hold && valid ? build.tile : null,
+					placement: !affordable ? "saving" : hold ? "paused" : valid ? build.placement : build.placement === "not-found" ? "not-found" : "checking"
+				};
+			});
+		}
+		message(error) {
+			return (error instanceof Error ? error.message : String(error)).slice(0, 240);
+		}
+		report(error) {
+			const message = this.message(error);
+			if (message !== this.lastError) {
+				console.error("[OpenFront Overlay] Strategy advice unavailable:", error);
+				this.lastError = message;
+			}
+		}
+		fail(error) {
+			this.report(error);
+			this.snapshot.status = "unavailable";
+			this.snapshot.error = this.message(error);
+			this.snapshot.builds = [];
+		}
+		hostile(me, player) {
+			return player.smallID() !== me.smallID() && !sameTeam(me.team(), player.team()) && !me.isFriendly(player);
+		}
+		pressure(me) {
+			return this.snapshot.threatError !== null || me.incomingAttacks().some((a) => !a.retreating && a.troops > 0) || this.snapshot.threats.some((t) => t.kind === "neighbor" || t.kind === "missile");
+		}
+		readThreats(me, spatial) {
+			const threats = [];
+			const players = new Map(this.game.players().map((p) => [p.smallID(), p]));
+			const incoming = /* @__PURE__ */ new Map();
+			for (const attack of me.incomingAttacks()) {
+				const player = players.get(attack.attackerID);
+				if (!player) throw new Error("Unknown incoming attacker.");
+				if (attack.retreating || !player.isAlive() || player.type() !== PlayerType.Human || !this.hostile(me, player)) continue;
+				const troops = rawTroops(attack.troops);
+				if (troops > 0) incoming.set(player.smallID(), (incoming.get(player.smallID()) ?? 0) + troops);
+			}
+			for (const player of players.values()) {
+				if (!player.isAlive() || !this.hostile(me, player)) continue;
+				const id = player.smallID();
+				const name = player.displayName().slice(0, 200);
+				if (incoming.has(id)) threats.push({
+					kind: "attack",
+					id,
+					name,
+					troops: rawTroops(incoming.get(id))
+				});
+				else if (player.type() === PlayerType.Human && spatial.fronts.has(id) && player.troops() > 0 && player.troops() >= me.troops() * 2) threats.push({
+					kind: "neighbor",
+					id,
+					name,
+					troops: rawTroops(player.troops())
+				});
+			}
+			const capability = /* @__PURE__ */ new Set();
+			for (const unit of this.game.units()) {
+				if (!unit.isActive()) continue;
+				const owner = unit.owner();
+				if (!this.hostile(me, owner)) continue;
+				const type = unit.type();
+				const id = owner.smallID();
+				const name = owner.displayName().slice(0, 200);
+				if (type === UnitType.MissileSilo && owner.isAlive()) capability.add(id);
+				const target = unit.targetTile();
+				if (!missiles.includes(type) && type !== UnitType.MIRV) continue;
+				if (target === void 0 || target === null) continue;
+				if (!Number.isSafeInteger(target) || target < 0 || target >= this.game.width() * this.game.height()) throw new Error("Invalid missile target.");
+				if (type === UnitType.MIRV && this.game.ownerID(target) === me.smallID()) threats.push({
+					kind: "missile",
+					id: unit.id(),
+					name,
+					troops: 0
+				});
+				else if (missiles.includes(type)) {
+					const radius = positive(this.game.config().nukeMagnitudes(type).outer, "blast radius");
+					if (spatial.blastTouches(target, radius)) threats.push({
+						kind: "missile",
+						id: unit.id(),
+						name,
+						troops: 0
+					});
+				}
+			}
+			for (const id of capability) threats.push({
+				kind: "capability",
+				id,
+				name: players.get(id).displayName().slice(0, 200),
+				troops: 0
+			});
+			const priority = {
+				missile: 0,
+				attack: 1,
+				neighbor: 2,
+				capability: 3
+			};
+			return threats.sort((a, b) => priority[a.kind] - priority[b.kind] || a.id - b.id).slice(0, 512);
+		}
+		neighbors(tile) {
+			const width = this.game.width();
+			const result = [];
+			if (tile >= width) result.push(tile - width);
+			if (tile + width < width * this.game.height()) result.push(tile + width);
+			if (tile % width > 0) result.push(tile - 1);
+			if (tile % width + 1 < width) result.push(tile + 1);
+			return result;
+		}
+		owned(tile, me) {
+			return this.game.ownerID(tile) === me.smallID() && this.game.isLand(tile) && !this.game.isImpassable(tile);
+		}
+		distance(a, b) {
+			return Math.hypot(a % this.game.width() - b % this.game.width(), Math.floor(a / this.game.width()) - Math.floor(b / this.game.width()));
+		}
+		async plan(me, spatial, generation) {
+			if (!me.buildables) throw new Error("Missing player.buildables().");
+			const config = this.game.config();
+			if (!config.isUnitDisabled) throw new Error("Missing config.isUnitDisabled().");
+			const types = buildTypes.filter((type) => !config.isUnitDisabled(type));
+			const prices = await me.buildables(void 0, types);
+			if (this.disposed || generation !== this.generation) return [];
+			if (!Array.isArray(prices)) throw new Error("Invalid build prices.");
+			const costs = new Map(prices.map((p) => [p.type, goldValue(p.cost)]));
+			if (types.some((type) => !costs.has(type))) throw new Error("Incomplete build prices.");
+			const own = this.game.units().filter((u) => u.isActive() && u.owner().smallID() === me.smallID() && buildTypes.includes(u.type()));
+			const pending = new Set(own.filter(constructing).map((u) => u.type()));
+			const count = (type) => own.filter((u) => u.type() === type).length;
+			const assets = own.filter((u) => economyTypes.includes(u.type()) && !constructing(u)).slice(0, SAMPLE_LIMIT);
+			const sites = new Set(take(spatial.sites));
+			for (const asset of assets) for (const tile of this.neighbors(asset.tile())) sites.add(tile);
+			for (const tile of take(spatial.coast, 8)) sites.add(tile);
+			for (const front of take(spatial.fronts.values(), 8)) for (const tile of take(front, 4)) for (const n of this.neighbors(tile)) if (this.owned(n, me)) sites.add(n);
+			const candidates = [...sites].filter((tile) => this.owned(tile, me));
+			const safeScore = (tile) => this.neighbors(tile).filter((n) => this.owned(n, me)).length;
+			candidates.sort((a, b) => safeScore(b) - safeScore(a) || a - b);
+			const coast = spatial.coastalSites(Math.floor(this.game.ticks() / 15), 8);
+			const can = (type) => costs.has(type) && !pending.has(type);
+			const choices = [];
+			const city = count(UnitType.City), ports = count(UnitType.Port), factories = count(UnitType.Factory);
+			const reserve = me.troops() / Math.max(1, this.game.config().maxTroops(me));
+			const eco = city === 0 && can(UnitType.City) ? UnitType.City : reserve >= .8 && can(UnitType.City) ? UnitType.City : coast.length && ports <= factories && can(UnitType.Port) ? UnitType.Port : ports > factories && can(UnitType.Factory) ? UnitType.Factory : can(UnitType.City) ? UnitType.City : can(UnitType.Factory) && ports > 0 ? UnitType.Factory : coast.length && can(UnitType.Port) ? UnitType.Port : null;
+			if (eco !== null) choices.push({
+				type: eco,
+				reason: eco === UnitType.City ? city === 0 ? "foundation" : "capacity" : eco === UnitType.Port ? "trade" : "production",
+				tiles: eco === UnitType.Port ? coast : candidates
+			});
+			const fronts = this.snapshot.threats.filter((t) => t.kind === "attack" || t.kind === "neighbor").sort((a, b) => Number(b.kind === "attack") - Number(a.kind === "attack") || b.troops - a.troops).slice(0, 3);
+			if (fronts.length && can(UnitType.DefensePost)) {
+				const range = positive(config.defensePostRange?.(), "Defense Post range");
+				const frontTiles = fronts.flatMap((t) => take(spatial.fronts.get(t.id) ?? [], 8));
+				const queue = frontTiles.flatMap((tile) => this.neighbors(tile)).filter((tile) => this.owned(tile, me));
+				const seen = new Set(queue);
+				for (let i = 0; i < queue.length && i < 128; i++) for (const tile of this.neighbors(queue[i])) {
+					if (seen.size >= 256 || seen.has(tile) || !this.owned(tile, me)) continue;
+					seen.add(tile);
+					queue.push(tile);
+				}
+				const posts = own.filter((u) => u.type() === UnitType.DefensePost);
+				const tiles = [...seen].filter((tile) => frontTiles.some((f) => this.distance(tile, f) <= range) && !posts.some((u) => this.distance(tile, u.tile()) < range / 2));
+				const depth = (tile) => Math.min(...frontTiles.map((f) => this.distance(tile, f)));
+				tiles.sort((a, b) => safeScore(b) - safeScore(a) || Math.abs(depth(a) - 5) - Math.abs(depth(b) - 5) || a - b);
+				choices.push({
+					type: UnitType.DefensePost,
+					reason: "frontier",
+					tiles: tiles.filter((tile) => depth(tile) >= 3)
+				});
+			}
+			if (this.snapshot.threats.some((t) => t.kind === "capability" || t.kind === "missile") && can(UnitType.SAMLauncher)) {
+				const range = positive(config.samRange?.(1), "SAM range");
+				const sams = own.filter((u) => u.type() === UnitType.SAMLauncher && !constructing(u));
+				const uncovered = assets.filter((asset) => !sams.some((sam) => {
+					const level = positive(sam.level?.(), "SAM level");
+					let currentRange = positive(config.samRange?.(level), "SAM range");
+					if (sam.state.samUpgradeStartTick !== void 0 && sam.state.samUpgradeStartTick !== null) currentRange = Math.min(currentRange, positive(sam.state.samUpgradeStartRange, "SAM upgrade range"));
+					return this.distance(sam.tile(), asset.tile()) <= currentRange;
+				}));
+				const score = (tile) => uncovered.reduce((n, asset) => n + (this.distance(tile, asset.tile()) <= range ? 1 : 0), 0);
+				const tiles = candidates.filter((tile) => score(tile) > 0);
+				tiles.sort((a, b) => score(b) - score(a) || safeScore(b) - safeScore(a) || a - b);
+				if (uncovered.length) choices.push({
+					type: UnitType.SAMLauncher,
+					reason: "coverage",
+					tiles
+				});
+			}
+			const result = [];
+			const round = this.round++;
+			for (const choice of choices) {
+				if (this.disposed || generation !== this.generation) return [];
+				const cost = costs.get(choice.type);
+				const gold = goldValue(me.gold?.());
+				const affordable = gold >= cost;
+				const paused = economyTypes.includes(choice.type) && this.pressure(me);
+				const duration = config.unitInfo?.(choice.type).constructionDuration;
+				const ms = config.msPerTick?.();
+				const constructionSeconds = duration !== void 0 && Number.isFinite(duration) && duration >= 0 && ms !== void 0 ? duration * positive(ms, "tick duration") / 1e3 : null;
+				const plan = {
+					type: choice.type,
+					reason: choice.reason,
+					cost: cost.toString(),
+					shortfall: (cost > gold ? cost - gold : 0n).toString(),
+					affordable,
+					paused,
+					placement: !affordable ? "saving" : paused ? "paused" : "checking",
+					tile: null,
+					constructionSeconds
+				};
+				if (affordable && !paused) {
+					plan.placement = "not-found";
+					const offset = round * 3 % Math.max(1, choice.tiles.length);
+					const probes = [...choice.tiles.slice(offset), ...choice.tiles.slice(0, offset)].slice(0, 3);
+					for (const tile of probes) {
+						if (this.disposed || generation !== this.generation) return [];
+						const checks = await me.buildables(tile, [choice.type]);
+						if (this.disposed || generation !== this.generation) return [];
+						if (!Array.isArray(checks)) throw new Error("Invalid placement response.");
+						const check = checks.find((p) => p.type === choice.type);
+						if (!check) throw new Error("Incomplete placement response.");
+						const currentCost = goldValue(check.cost);
+						plan.cost = currentCost.toString();
+						const currentGold = goldValue(me.gold?.());
+						plan.affordable = currentGold >= currentCost;
+						plan.shortfall = (currentCost > currentGold ? currentCost - currentGold : 0n).toString();
+						plan.paused = economyTypes.includes(choice.type) && this.pressure(me);
+						if (!plan.affordable || plan.paused) {
+							plan.placement = plan.paused ? "paused" : "saving";
+							break;
+						}
+						if (check.canBuild === false) continue;
+						const actual = check.canBuild;
+						if (!Number.isSafeInteger(actual) || actual < 0 || actual >= this.game.width() * this.game.height()) throw new Error("Invalid build placement.");
+						if (!this.owned(actual, me) || this.distance(actual, tile) > 0) continue;
+						plan.tile = actual;
+						plan.placement = "valid";
+						break;
+					}
+				}
+				result.push(plan);
+			}
+			return result;
+		}
+	};
+	//#endregion
 	//#region chrome-extension/src/Main.ts
 	var PIRATE_CAPTURE_THRESHOLD = 10;
 	var RICH_GOLD_THRESHOLD = 25000000n;
@@ -692,6 +1109,10 @@ var OpenFrontOverlay = (function(exports) {
 		let game = null;
 		let buildMenu = null;
 		let observer = null;
+		let strategy = null;
+		let warnedThreats = /* @__PURE__ */ new Set();
+		let lastBuildSignature = "[]";
+		let lastBuildError = null;
 		let advisor = emptyAdvisor();
 		let stopped = false;
 		let inGame = false;
@@ -732,6 +1153,8 @@ var OpenFrontOverlay = (function(exports) {
 			} catch (error) {
 				observer?.dispose();
 				observer = null;
+				strategy?.dispose();
+				strategy = null;
 				game = null;
 				requestedEnabled = false;
 				discoveryError = /* @__PURE__ */ new Error(`Cannot discover GameView: ${error instanceof Error ? error.message : String(error)}`);
@@ -749,6 +1172,9 @@ var OpenFrontOverlay = (function(exports) {
 				if (!playing || playing !== inGame || game !== null) requestedEnabled = playing;
 				observer?.dispose();
 				observer = null;
+				strategy?.dispose();
+				strategy = null;
+				warnedThreats.clear();
 				game = found;
 				buildMenu = foundMenu;
 				inGame = playing;
@@ -789,6 +1215,74 @@ var OpenFrontOverlay = (function(exports) {
 			}, void 0, void 0, collectBetrayals);
 			observer.setEnabled(true);
 			advisor = observer.snapshot;
+			strategy = new StrategyAdvisor(game, () => {
+				if (stopped) return;
+				publish();
+				warnStrategyThreats();
+				scheduleSiloFrame();
+			});
+		};
+		const warnStrategyThreats = () => {
+			const current = /* @__PURE__ */ new Set();
+			for (const kind of ["attack", "missile"]) {
+				const names = [];
+				for (const threat of strategy?.snapshot.threats ?? []) {
+					if (threat.kind !== kind) continue;
+					const key = `${kind}:${threat.id}`;
+					current.add(key);
+					if (!warnedThreats.has(key)) names.push(threat.name);
+				}
+				if (names.length) postWarning(kind === "attack" ? "OPENFRONT_OVERLAY_HUMAN_ATTACK" : "OPENFRONT_OVERLAY_MISSILE_THREAT", [...new Set(names)].slice(0, MAX_WARNED_PLAYER_NAMES));
+			}
+			warnedThreats = current;
+		};
+		const updateStrategy = () => {
+			if (!requestedEnabled || !game || !observer || !advisor.enabled) {
+				strategy?.dispose();
+				strategy = null;
+				warnedThreats.clear();
+				return;
+			}
+			strategy?.poll(observer.strategyIndex());
+		};
+		const publishBuildMarkers = (force = false) => {
+			const buildMarkers = [];
+			try {
+				if (requestedEnabled && game && advisor.enabled && !game.isCatchingUp()) for (const [id, build] of (strategy?.snapshot.builds ?? []).entries()) {
+					if (build.placement !== "valid" || build.tile === null || !build.affordable || build.paused) continue;
+					if (game.ownerID(build.tile) !== game.myPlayer()?.smallID()) continue;
+					const transform = buildMenu?.transformHandler;
+					if (!transform || typeof transform.worldToScreenCoordinates !== "function") throw new Error("Missing BuildMenu.transformHandler for build placements.");
+					const screen = transform.worldToScreenCoordinates({
+						x: game.x(build.tile) + .5,
+						y: game.y(build.tile) + .5
+					});
+					if (!Number.isFinite(screen.x) || !Number.isFinite(screen.y)) throw new Error("Invalid projected build placement.");
+					buildMarkers.push({
+						id,
+						type: build.type,
+						x: screen.x,
+						y: screen.y,
+						radius: 12
+					});
+				}
+				lastBuildError = null;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (message !== lastBuildError) {
+					console.error("[OpenFront Overlay] Cannot project build placements:", error);
+					lastBuildError = message;
+				}
+				buildMarkers.length = 0;
+			}
+			const signature = JSON.stringify(buildMarkers);
+			if (!force && signature === lastBuildSignature) return;
+			lastBuildSignature = signature;
+			window.postMessage({
+				type: "OPENFRONT_OVERLAY_BUILDS",
+				buildMarkers,
+				controlId
+			}, window.location.origin);
 		};
 		const collectBetrayals = (args) => {
 			try {
@@ -1231,6 +1725,7 @@ var OpenFrontOverlay = (function(exports) {
 		};
 		const publish = () => {
 			if (stopped) return;
+			publishBuildMarkers();
 			publishPirateMarkers();
 			publishAbandonedMarkers();
 			let status = "idle";
@@ -1265,6 +1760,7 @@ var OpenFrontOverlay = (function(exports) {
 				status,
 				troops,
 				advisor,
+				strategy: requestedEnabled && advisor.enabled ? strategy?.snapshot ?? null : null,
 				controlId,
 				missileSilos,
 				playerLists: {
@@ -1289,18 +1785,22 @@ var OpenFrontOverlay = (function(exports) {
 			}
 			observer?.dispose();
 			observer = null;
+			strategy?.dispose();
+			strategy = null;
+			warnedThreats.clear();
 			advisor = emptyAdvisor();
 			enableObserver();
 			publish();
 		};
 		const scheduleSiloFrame = () => {
-			if (stopped || !inGame || !game || !(hasEnemySilos || hasPirates || hasAbandoned) || siloFrame !== null) return;
+			if (stopped || !inGame || !game || !(hasEnemySilos || hasPirates || hasAbandoned || strategy?.snapshot.builds.some((b) => b.tile !== null)) || siloFrame !== null) return;
 			siloFrame = window.requestAnimationFrame(() => {
 				siloFrame = null;
 				if (!inGame || !game || stopped) return;
 				publishSiloMarkers();
 				publishPirateMarkers();
 				publishAbandonedMarkers();
+				publishBuildMarkers();
 				scheduleSiloFrame();
 			});
 		};
@@ -1308,17 +1808,20 @@ var OpenFrontOverlay = (function(exports) {
 			discover();
 			enableObserver();
 			observer?.poll();
+			updateStrategy();
 			warnIncomingBoats();
 			trackPirates();
 			scanRichPlayers();
 			scanInactiveNeighbors();
 			warnTraitorNeighbors();
 			publish();
+			warnStrategyThreats();
 			scheduleSiloFrame();
 		};
 		const stop = () => {
 			stopped = true;
 			observer?.dispose();
+			strategy?.dispose();
 			window.clearInterval(timer);
 			if (siloFrame !== null) window.cancelAnimationFrame(siloFrame);
 			window.removeEventListener("message", control);
