@@ -18,6 +18,8 @@ import type {
   RemotePlayer,
   RemoteUnit,
 } from "../src/Observer";
+import { goldValue, StrategyAdvisor } from "../src/Strategy";
+import type { StrategySnapshot } from "../src/Strategy";
 
 function fixture(size = 32) {
   let tick = 1;
@@ -89,11 +91,14 @@ function fixture(size = 32) {
       percentageTilesOwnedToWin: () => 80,
       doomsdayClockConfig: () => ({ enabled: clockEnabled }),
       nukeMagnitudes: () => ({ outer: 3 }),
+      isUnitDisabled: () => true,
     }),
   };
   me.incomingAttacks = () =>
     incoming ? [{ troops: incoming, attackerID: enemy.smallID() }] : [];
   me.outgoingAttacks = () => (outgoing ? [{ troops: outgoing }] : []);
+  me.buildables = async (_tile, types) =>
+    types.map((type) => ({ type, cost: 125000n, canBuild: false }));
   const queued = new Map<number, () => void>();
   let time = 0;
   let next = 0;
@@ -212,9 +217,631 @@ function unit(
     tile: () => 1,
     targetTile: () => target,
     isActive: () => true,
+    isUnderConstruction: () => false,
+    level: () => 1,
     state: { retreating: false },
   };
 }
+
+function strategyFixture() {
+  const f = fixture(64 * 64);
+  f.game.width = () => 64;
+  f.game.height = () => 64;
+  f.game.x = (tile) => tile % 64;
+  f.game.y = (tile) => Math.floor(tile / 64);
+  f.game.isLand = (tile) => tile >= 64;
+  f.owners.fill(1);
+  for (let y = 0; y < 64; y++) f.owners[y * 64 + 63] = 2;
+  f.me.troops = () => 400;
+  const config = f.game.config();
+  f.game.config = () => ({
+    ...config,
+    isUnitDisabled: () => false,
+    unitInfo: (type) => ({
+      constructionDuration: type === UnitType.SAMLauncher ? 300 : 20,
+    }),
+    msPerTick: () => 100,
+    defensePostRange: () => 30,
+    samRange: () => 70,
+  });
+  let gold = 125000n;
+  let cost = 125000n;
+  let changes = 0;
+  const queries: { tile: number | undefined; types: readonly UnitType[] }[] =
+    [];
+  f.me.gold = () => gold;
+  f.me.buildables = async (tile, types) => {
+    queries.push({ tile, types });
+    return types.map((type) => ({
+      type,
+      cost,
+      canBuild: tile !== undefined && f.game.ownerID(tile) === 1 ? tile : false,
+    }));
+  };
+  const spatial = new SpatialIndex(f.game, 1);
+  spatial.initialize(4096);
+  const strategy = new StrategyAdvisor(f.game, () => changes++);
+  const flush = async () => {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  };
+  const add = (
+    type: UnitType,
+    tile = 32 * 64 + 32,
+    owner = f.me,
+    pending = false,
+  ) => {
+    const u = unit(owner, type);
+    u.id = () => f.units.indexOf(u) + 1;
+    u.tile = () => tile;
+    u.isUnderConstruction = () => pending;
+    u.level = () => 1;
+    f.units.push(u);
+    return u;
+  };
+  return {
+    ...f,
+    spatial,
+    strategy,
+    queries,
+    flush,
+    add,
+    setGold: (value: bigint) => {
+      gold = value;
+    },
+    setCost: (value: bigint) => {
+      cost = value;
+    },
+    changes: () => changes,
+  };
+}
+
+void test("strategy uses exact worker prices, strict affordability and validated sites", async () => {
+  const f = strategyFixture();
+  try {
+    assert.equal(goldValue(123n), 123n);
+    assert.equal(goldValue(123), 123n);
+    for (const invalid of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "123", null])
+      assert.throws(() => goldValue(invalid));
+    f.setGold(124999n);
+    f.strategy.poll(f.spatial, 0);
+    await f.flush();
+    assert.equal(f.strategy.snapshot.status, "ready");
+    let plan = f.strategy.snapshot.builds[0];
+    assert.equal(plan.type, UnitType.City);
+    assert.equal(plan.reason, "foundation");
+    assert.equal(plan.cost, "125000");
+    assert.equal(plan.shortfall, "1");
+    assert.equal(plan.affordable, false);
+    assert.equal(plan.tile, null);
+    assert.equal(
+      f.queries.length,
+      1,
+      "saving does not query eligible locations",
+    );
+    f.setGold(125000n);
+    f.strategy.poll(f.spatial, 1500);
+    await f.flush();
+    plan = f.strategy.snapshot.builds[0];
+    assert.equal(plan.affordable, true, "equality is affordable");
+    assert.equal(plan.placement, "valid");
+    assert.equal(plan.shortfall, "0");
+    assert.equal(plan.constructionSeconds, 2);
+    assert.ok(
+      f.queries.some((q) => q.tile === plan.tile && q.types[0] === plan.type),
+    );
+    f.setGold(0n);
+    f.strategy.poll(f.spatial, 1600);
+    assert.equal(
+      f.strategy.snapshot.builds[0].tile,
+      null,
+      "spend clears marker without waiting for next query",
+    );
+    assert.equal(f.strategy.snapshot.builds[0].shortfall, "125000");
+  } finally {
+    f.strategy.dispose();
+  }
+});
+
+void test("economy balances real construction counts, coastal trade and factory production", async () => {
+  const f = strategyFixture();
+  try {
+    f.add(UnitType.City);
+    f.strategy.poll(f.spatial, 0);
+    await f.flush();
+    assert.equal(f.strategy.snapshot.builds[0].type, UnitType.Port);
+    f.add(UnitType.Port, 64 + 20);
+    f.strategy.poll(f.spatial, 1500);
+    await f.flush();
+    assert.equal(f.strategy.snapshot.builds[0].type, UnitType.Factory);
+    f.add(UnitType.Factory, 1000, f.me, true);
+    f.me.troops = () => 800;
+    f.strategy.poll(f.spatial, 3000);
+    await f.flush();
+    assert.equal(f.strategy.snapshot.builds[0].type, UnitType.City);
+    assert.equal(f.strategy.snapshot.builds[0].reason, "capacity");
+    f.add(UnitType.City, 2000, f.me, true);
+    f.strategy.poll(f.spatial, 4500);
+    await f.flush();
+    assert.ok(
+      !f.strategy.snapshot.builds.some(
+        (b) => b.type === UnitType.City || b.type === UnitType.Factory,
+      ),
+      "do not recommend duplicate builds already under construction",
+    );
+  } finally {
+    f.strategy.dispose();
+  }
+});
+
+void test("strategy distinguishes actual humans, retreat, teammates, allies and strength boundaries", async () => {
+  const f = strategyFixture();
+  try {
+    f.enemy.troops = () => 799;
+    f.me.incomingAttacks = () => [
+      { attackerID: 2, troops: 900, retreating: true },
+    ];
+    f.strategy.poll(f.spatial, 0);
+    await f.flush();
+    assert.equal(f.strategy.snapshot.threats.length, 0);
+    f.enemy.troops = () => 800;
+    f.strategy.poll(f.spatial, 100);
+    assert.equal(f.strategy.snapshot.threats[0].kind, "neighbor");
+    f.me.incomingAttacks = () => [
+      { attackerID: 2, troops: 5 },
+      { attackerID: 2, troops: 7 },
+    ];
+    f.strategy.poll(f.spatial, 200);
+    assert.equal(f.strategy.snapshot.threats[0].kind, "attack");
+    assert.equal(f.strategy.snapshot.threats[0].troops, 12);
+    assert.equal(f.strategy.snapshot.builds[0].paused, true);
+    assert.equal(f.strategy.snapshot.builds[0].tile, null);
+    for (const type of [PlayerType.Bot, PlayerType.Nation]) {
+      f.enemy.type = () => type;
+      f.strategy.poll(f.spatial, 300);
+      assert.equal(f.strategy.snapshot.threats.length, 0);
+    }
+    f.enemy.type = () => PlayerType.Human;
+    f.me.team = f.enemy.team = () => "same";
+    f.enemy.state.isDisconnected = true;
+    f.strategy.poll(f.spatial, 400);
+    assert.equal(f.strategy.snapshot.threats.length, 0);
+    f.enemy.team = () => "different";
+    f.me.isFriendly = () => true;
+    f.strategy.poll(f.spatial, 500);
+    assert.equal(f.strategy.snapshot.threats.length, 0);
+  } finally {
+    f.strategy.dispose();
+  }
+});
+
+void test("missile blast overlap differs from silo capability and SAM suggestions cover uncovered assets", async () => {
+  const f = strategyFixture();
+  try {
+    f.add(UnitType.City);
+    const silo = f.add(UnitType.MissileSilo, 100, f.enemy, true);
+    const missile = f.add(UnitType.AtomBomb, 101, f.enemy);
+    missile.targetTile = () => 32 * 64 + 63;
+    f.strategy.poll(f.spatial, 0);
+    await f.flush();
+    assert.deepEqual(
+      f.strategy.snapshot.threats.map((t) => t.kind),
+      ["missile", "capability"],
+    );
+    let sam = f.strategy.snapshot.builds.find(
+      (b) => b.type === UnitType.SAMLauncher,
+    )!;
+    assert.equal(sam.reason, "coverage");
+    assert.equal(sam.placement, "valid");
+    assert.equal(sam.constructionSeconds, 30);
+    assert.equal(f.strategy.snapshot.builds[0].paused, true);
+    const existing = f.add(UnitType.SAMLauncher);
+    f.strategy.poll(f.spatial, 1500);
+    await f.flush();
+    assert.ok(
+      !f.strategy.snapshot.builds.some((b) => b.type === UnitType.SAMLauncher),
+      "completed positional coverage avoids duplicates",
+    );
+    existing.isUnderConstruction = () => true;
+    silo.isActive = () => false;
+    missile.isActive = () => false;
+    f.strategy.poll(f.spatial, 3000);
+    await f.flush();
+    assert.equal(f.strategy.snapshot.threats.length, 0);
+    assert.ok(
+      !f.strategy.snapshot.builds.some((b) => b.type === UnitType.SAMLauncher),
+    );
+  } finally {
+    f.strategy.dispose();
+  }
+});
+
+void test("Defense Posts cover the actual human frontier from owned setback tiles", async () => {
+  const f = strategyFixture();
+  try {
+    f.me.incomingAttacks = () => [{ attackerID: 2, troops: 123 }];
+    f.strategy.poll(f.spatial, 0);
+    await f.flush();
+    const plan = f.strategy.snapshot.builds.find(
+      (b) => b.type === UnitType.DefensePost,
+    )!;
+    assert.equal(plan.placement, "valid");
+    assert.equal(f.game.ownerID(plan.tile!), 1);
+    const distanceToEnemy = 63 - (plan.tile! % 64);
+    assert.ok(
+      distanceToEnemy >= 3 && distanceToEnemy <= 30,
+      "inside protection range, not on the border",
+    );
+    assert.ok(
+      f.queries.length <= 10,
+      "one prices query plus at most three probes per recommendation",
+    );
+    f.add(UnitType.DefensePost, plan.tile!);
+    f.strategy.poll(f.spatial, 1500);
+    await f.flush();
+    const next = f.strategy.snapshot.builds.find(
+      (b) => b.type === UnitType.DefensePost,
+    );
+    if (next?.tile !== null && next?.tile !== undefined)
+      assert.ok(
+        Math.hypot(
+          (next.tile % 64) - (plan.tile! % 64),
+          Math.floor(next.tile / 64) - Math.floor(plan.tile! / 64),
+        ) >= 15,
+      );
+  } finally {
+    f.strategy.dispose();
+  }
+});
+
+void test("invalid sites stay unmarked; missing APIs and rejected queries are explicit and retryable", async () => {
+  const f = strategyFixture();
+  const originalError = console.error;
+  const errors: unknown[][] = [];
+  console.error = (...args) => {
+    errors.push(args);
+  };
+  try {
+    const query = f.me.buildables!;
+    f.me.buildables = async (tile, types) =>
+      (await query(tile, types)).map((r) => ({ ...r, canBuild: false }));
+    f.strategy.poll(f.spatial, 0);
+    await f.flush();
+    assert.equal(f.strategy.snapshot.builds[0].placement, "not-found");
+    assert.equal(f.strategy.snapshot.builds[0].tile, null);
+    assert.equal(f.queries.length, 4);
+    f.me.buildables = async () => {
+      throw new Error("worker unavailable");
+    };
+    f.strategy.poll(f.spatial, 1500);
+    await f.flush();
+    assert.equal(f.strategy.snapshot.status, "unavailable");
+    assert.match(f.strategy.snapshot.error!, /worker unavailable/);
+    assert.equal(f.strategy.snapshot.builds.length, 0);
+    assert.ok(errors.length > 0);
+    f.me.buildables = undefined;
+    f.strategy.poll(f.spatial, 3000);
+    await f.flush();
+    assert.match(f.strategy.snapshot.error!, /buildables/);
+    f.me.buildables = query;
+    f.strategy.poll(f.spatial, 4500);
+    await f.flush();
+    assert.equal(f.strategy.snapshot.status, "ready");
+    assert.equal(f.strategy.snapshot.error, null);
+  } finally {
+    f.strategy.dispose();
+    console.error = originalError;
+  }
+});
+
+void test("late worker replies cannot resurrect placements after disposal, catchup or rollback", async () => {
+  for (const mode of ["dispose", "catchup", "rollback"]) {
+    const f = strategyFixture();
+    const query = f.me.buildables!;
+    let resolve!: (value: Awaited<ReturnType<typeof query>>) => void;
+    let count = 0;
+    f.me.buildables = async (tile, types) => {
+      count++;
+      return new Promise((done) => {
+        resolve = done;
+      });
+    };
+    try {
+      f.strategy.poll(f.spatial, 0);
+      assert.equal(count, 1);
+      if (mode === "dispose") f.strategy.dispose();
+      if (mode === "catchup") {
+        f.setCatchup(true);
+        f.strategy.poll(null, 500);
+      }
+      if (mode === "rollback") {
+        f.game.ticks = () => 0;
+        f.strategy.poll(null, 500);
+      }
+      resolve(
+        await query(undefined, [
+          UnitType.City,
+          UnitType.Port,
+          UnitType.Factory,
+          UnitType.DefensePost,
+          UnitType.SAMLauncher,
+        ]),
+      );
+      await f.flush();
+      assert.equal(f.strategy.snapshot.builds.length, 0);
+      assert.equal(f.changes(), 0);
+      assert.equal(
+        count,
+        1,
+        "stale queries cannot issue more placement requests",
+      );
+    } finally {
+      f.strategy.dispose();
+    }
+  }
+});
+
+void test("strategy timeouts surface an error and late replies cannot restart the expired scan", async (t) => {
+  const f = strategyFixture();
+  const originalError = console.error;
+  console.error = () => {};
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let resolve!: (
+    value: { type: UnitType; cost: bigint; canBuild: false }[],
+  ) => void;
+  let count = 0;
+  f.me.buildables = async () => {
+    count++;
+    return new Promise((done) => {
+      resolve = done;
+    });
+  };
+  try {
+    f.strategy.poll(f.spatial, 0);
+    t.mock.timers.tick(3000);
+    assert.equal(f.strategy.snapshot.status, "unavailable");
+    assert.match(f.strategy.snapshot.error!, /timed out/);
+    resolve(
+      [
+        UnitType.City,
+        UnitType.Port,
+        UnitType.Factory,
+        UnitType.DefensePost,
+        UnitType.SAMLauncher,
+      ].map((type) => ({ type, cost: 125000n, canBuild: false })),
+    );
+    await f.flush();
+    assert.equal(f.strategy.snapshot.status, "unavailable");
+    assert.equal(count, 1);
+    assert.equal(f.changes(), 1);
+  } finally {
+    f.strategy.dispose();
+    console.error = originalError;
+    t.mock.timers.reset();
+  }
+});
+
+void test("later scans explore beyond rejected sites and never mark stale placement replies", async () => {
+  const f = strategyFixture();
+  const query = f.me.buildables!;
+  const rejected = new Set<number>();
+  f.me.buildables = async (tile, types) => {
+    const result = await query(tile, types);
+    if (tile === undefined) return result;
+    if (rejected.size < 3) {
+      rejected.add(tile);
+      return result.map((r) => ({ ...r, canBuild: false }));
+    }
+    return result;
+  };
+  try {
+    f.strategy.poll(f.spatial, 0);
+    await f.flush();
+    assert.equal(f.strategy.snapshot.builds[0].placement, "not-found");
+    f.strategy.poll(f.spatial, 1500);
+    await f.flush();
+    assert.equal(f.strategy.snapshot.builds[0].placement, "valid");
+    assert.equal(rejected.has(f.strategy.snapshot.builds[0].tile!), false);
+
+    let resolve!: (value: Awaited<ReturnType<typeof query>>) => void;
+    let checkingTile: number | undefined;
+    f.me.buildables = async (tile, types) => {
+      if (tile === undefined) return query(tile, types);
+      checkingTile = tile;
+      return new Promise((done) => {
+        resolve = done;
+      });
+    };
+    f.strategy.poll(f.spatial, 3000);
+    await f.flush();
+    assert.notEqual(checkingTile, undefined);
+    f.setGold(0n);
+    resolve(await query(checkingTile, [UnitType.City]));
+    await f.flush();
+    assert.equal(f.strategy.snapshot.builds[0].tile, null);
+    assert.equal(f.strategy.snapshot.builds[0].affordable, false);
+    assert.equal(f.strategy.snapshot.builds[0].shortfall, "125000");
+
+    f.setGold(125000n);
+    f.strategy.poll(f.spatial, 4500);
+    await f.flush();
+    const changes = f.changes();
+    f.strategy.dispose();
+    resolve(await query(checkingTile, [UnitType.City]));
+    await f.flush();
+    assert.equal(f.strategy.snapshot.builds.length, 0);
+    assert.equal(
+      f.changes(),
+      changes,
+      "late location replies do not publish or issue more probes",
+    );
+  } finally {
+    f.strategy.dispose();
+  }
+});
+
+void test("nuclear evidence handles MIRVs and launched missiles even after their owner dies", async () => {
+  const f = strategyFixture();
+  try {
+    const mirv = f.add(UnitType.MIRV, 100, f.enemy);
+    mirv.targetTile = () => 2000;
+    f.strategy.poll(f.spatial, 0);
+    await f.flush();
+    assert.equal(f.strategy.snapshot.threats[0].kind, "missile");
+    f.enemy.isAlive = () => false;
+    f.strategy.poll(f.spatial, 500);
+    assert.equal(f.strategy.snapshot.threats[0].kind, "missile");
+    mirv.targetTile = () => 63;
+    f.strategy.poll(f.spatial, 1000);
+    assert.equal(
+      f.strategy.snapshot.threats.length,
+      0,
+      "MIRV targeting someone else is not a confirmed local blast",
+    );
+    mirv.isActive = () => false;
+    const warhead = f.add(UnitType.MIRVWarhead, 101, f.enemy);
+    warhead.targetTile = () => 32 * 64 + 63;
+    f.strategy.poll(f.spatial, 1500);
+    await f.flush();
+    assert.equal(
+      f.strategy.snapshot.threats[0].kind,
+      "missile",
+      "warhead blast can overlap land outside the target owner's territory",
+    );
+    f.me.isFriendly = () => true;
+    f.strategy.poll(f.spatial, 2000);
+    assert.equal(f.strategy.snapshot.threats.length, 0);
+  } finally {
+    f.strategy.dispose();
+  }
+});
+
+void test("bridge publishes coherent plans, camera-follow placements and deduplicated human warnings", async () => {
+  const f = strategyFixture();
+  const messages: {
+    type: string;
+    advisor?: AdvisorSnapshot;
+    strategy?: StrategySnapshot | null;
+    buildMarkers?: {
+      id: number;
+      type: UnitType;
+      x: number;
+      y: number;
+      radius: number;
+    }[];
+  }[] = [];
+  let camera = 0;
+  let poll!: () => void;
+  const listeners = new Map<string, (event: MessageEvent) => void>();
+  const frames = new Map<number, () => void>();
+  let frameID = 0;
+  const fakeWindow = {
+    location: { origin: "https://openfront.io" },
+    postMessage: (message: (typeof messages)[number]) => messages.push(message),
+    setInterval: (callback: () => void) => {
+      poll = callback;
+      return 1;
+    },
+    clearInterval: () => {},
+    requestAnimationFrame: (callback: () => void) => {
+      frames.set(++frameID, callback);
+      return frameID;
+    },
+    cancelAnimationFrame: (id: number) => frames.delete(id),
+    addEventListener: (name: string, callback: (event: MessageEvent) => void) =>
+      listeners.set(name, callback),
+    removeEventListener: (name: string) => listeners.delete(name),
+  };
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: fakeWindow,
+  });
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      body: { classList: { contains: () => true } },
+      querySelector: () => ({
+        game: f.game,
+        transformHandler: {
+          scale: 2,
+          worldToScreenCoordinates: (point: { x: number; y: number }) => ({
+            x: point.x * 2 + camera,
+            y: point.y * 2,
+          }),
+        },
+      }),
+    },
+  });
+  const stop = startBridge();
+  try {
+    for (let i = 0; i < 20; i++) {
+      await f.flush();
+      poll();
+      if (messages.some((m) => m.strategy?.status === "ready")) break;
+    }
+    const state = messages
+      .filter(
+        (m) =>
+          m.type === "OPENFRONT_OVERLAY_STATE" &&
+          m.strategy?.status === "ready",
+      )
+      .at(-1)!;
+    assert.ok(state);
+    const plan = state.strategy!.builds[0];
+    const marker = messages
+      .filter((m) => m.type === "OPENFRONT_OVERLAY_BUILDS")
+      .at(-1)!.buildMarkers![0];
+    assert.equal(marker.type, plan.type);
+    assert.equal(marker.x, (f.game.x(plan.tile!) + 0.5) * 2);
+    const queries = f.queries.length;
+    camera = 100;
+    const [frame, callback] = frames.entries().next().value!;
+    frames.delete(frame);
+    callback();
+    assert.equal(
+      messages.filter((m) => m.type === "OPENFRONT_OVERLAY_BUILDS").at(-1)!
+        .buildMarkers![0].x,
+      marker.x + 100,
+    );
+    assert.equal(
+      f.queries.length,
+      queries,
+      "animation frames only project; never query eligibility",
+    );
+    f.me.incomingAttacks = () => [{ attackerID: 2, troops: 50 }];
+    poll();
+    poll();
+    assert.equal(
+      messages.filter((m) => m.type === "OPENFRONT_OVERLAY_HUMAN_ATTACK")
+        .length,
+      1,
+    );
+    const underAttack = messages
+      .filter((m) => m.type === "OPENFRONT_OVERLAY_STATE")
+      .at(-1)!.strategy!;
+    assert.equal(underAttack.threats[0].kind, "attack");
+    assert.equal(underAttack.builds[0].tile, null);
+    listeners.get("message")!({
+      source: fakeWindow,
+      origin: "https://openfront.io",
+      data: { type: "OPENFRONT_OVERLAY_CONTROL", enabled: false, requestId: 1 },
+    } as MessageEvent);
+    assert.equal(
+      messages.filter((m) => m.type === "OPENFRONT_OVERLAY_STATE").at(-1)!
+        .strategy,
+      null,
+    );
+    assert.equal(
+      messages.filter((m) => m.type === "OPENFRONT_OVERLAY_BUILDS").at(-1)!
+        .buildMarkers!.length,
+      0,
+    );
+  } finally {
+    stop();
+    f.strategy.dispose();
+    delete (globalThis as { window?: unknown }).window;
+    delete (globalThis as { document?: unknown }).document;
+  }
+});
 
 void test("opt-in, raw integer snapshot, incoming totals and safe original update behavior", () => {
   const f = fixture();
@@ -1054,7 +1681,11 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
     message(fakeWindow, "https://openfront.io", true);
     found = f.game;
     interval!();
-    assert.equal(messages.at(-1)?.advisor.status, "active");
+    assert.equal(
+      messages.filter((m) => m.type === "OPENFRONT_OVERLAY_STATE").at(-1)
+        ?.advisor?.status,
+      "active",
+    );
     assert.notEqual(
       f.game.update,
       original,
@@ -1064,7 +1695,11 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
     interval!();
     inGame = true;
     interval!();
-    assert.equal(messages.at(-1)?.advisor.enabled, true);
+    assert.equal(
+      messages.filter((m) => m.type === "OPENFRONT_OVERLAY_STATE").at(-1)
+        ?.advisor?.enabled,
+      true,
+    );
     assert.notEqual(
       f.game.update,
       original,

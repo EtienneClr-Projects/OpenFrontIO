@@ -32,6 +32,13 @@ export interface AdvisorSnapshot {
 }
 
 export interface RemotePlayer {
+  gold?(): bigint | number;
+  buildables?(
+    tile: number | undefined,
+    types: readonly UnitType[],
+  ): Promise<
+    { type: UnitType; cost: bigint | number; canBuild: number | false }[]
+  >;
   smallID(): number;
   displayName(): string;
   type(): PlayerType;
@@ -40,13 +47,19 @@ export interface RemotePlayer {
   isFriendly(player: RemotePlayer): boolean;
   numTilesOwned(): number;
   troops(): number;
-  incomingAttacks(): { troops: number; attackerID: number }[];
+  incomingAttacks(): {
+    troops: number;
+    attackerID: number;
+    retreating?: boolean;
+  }[];
   outgoingAttacks(): { troops: number }[];
   isTraitor(): boolean;
   state: { isDisconnected: boolean; inDoomsdayClock: boolean };
 }
 
 export interface RemoteUnit {
+  isUnderConstruction?(): boolean;
+  level?(): number;
   id(): number;
   owner(): RemotePlayer;
   type(): UnitType;
@@ -54,10 +67,19 @@ export interface RemoteUnit {
   targetTile(): number | undefined;
   targetUnitId?(): number | undefined;
   isActive(): boolean;
-  state: { retreating: boolean };
+  state: {
+    retreating: boolean;
+    samUpgradeStartTick?: number | null;
+    samUpgradeStartRange?: number | null;
+  };
 }
 
 export interface RemoteConfig {
+  isUnitDisabled?(type: UnitType): boolean;
+  unitInfo?(type: UnitType): { constructionDuration?: number };
+  msPerTick?(): number;
+  defensePostRange?(): number;
+  samRange?(level: number): number;
   maxTroops(player: RemotePlayer): number;
   gameConfig(): { gameMode: GameMode };
   percentageTilesOwnedToWin(seconds: number): number;
@@ -510,6 +532,10 @@ export class GameObserver {
       !this.game.isCatchingUp()
       ? [...this.spatial.fronts.keys()]
       : null;
+  }
+
+  strategyIndex(): SpatialIndex | null {
+    return this.frontOwnerIds() === null ? null : this.spatial;
   }
 
   private clearIndex(): void {

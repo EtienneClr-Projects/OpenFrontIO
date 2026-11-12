@@ -2,6 +2,7 @@ import { PlayerType, UnitType } from "@openfront/engine-api/game/GameTypes";
 import { GameUpdateType } from "@openfront/engine-api/game/GameUpdates";
 import { emptyAdvisor, GameObserver, rawTroops, sameTeam } from "./Observer";
 import type { AdvisorSnapshot, RemoteGame, RemotePlayer } from "./Observer";
+import { StrategyAdvisor } from "./Strategy";
 
 interface RemoteTransformHandler {
   scale: number;
@@ -52,8 +53,14 @@ type WarningType =
   | "OPENFRONT_OVERLAY_ABANDONED_RICH_PLAYER"
   | "OPENFRONT_OVERLAY_INACTIVE_NEIGHBOR"
   | "OPENFRONT_OVERLAY_TRAITOR_NEIGHBOR";
+type StrategyWarningType =
+  | "OPENFRONT_OVERLAY_HUMAN_ATTACK"
+  | "OPENFRONT_OVERLAY_MISSILE_THREAT";
 
-function postWarning(type: WarningType, playerNames?: string[]): void {
+function postWarning(
+  type: WarningType | StrategyWarningType,
+  playerNames?: string[],
+): void {
   window.postMessage(
     playerNames ? { type, playerNames } : { type },
     window.location.origin,
@@ -88,6 +95,10 @@ export function startBridge(): () => void {
   let game: RemoteGame | null = null;
   let buildMenu: RemoteBuildMenu | null = null;
   let observer: GameObserver | null = null;
+  let strategy: StrategyAdvisor | null = null;
+  let warnedThreats = new Set<string>();
+  let lastBuildSignature = "[]";
+  let lastBuildError: string | null = null;
   let advisor: AdvisorSnapshot = emptyAdvisor();
   let stopped = false;
   let inGame = false;
@@ -129,6 +140,8 @@ export function startBridge(): () => void {
     } catch (error) {
       observer?.dispose();
       observer = null;
+      strategy?.dispose();
+      strategy = null;
       game = null;
       requestedEnabled = false;
       discoveryError = new Error(
@@ -155,6 +168,9 @@ export function startBridge(): () => void {
       }
       observer?.dispose();
       observer = null;
+      strategy?.dispose();
+      strategy = null;
+      warnedThreats.clear();
       game = found;
       buildMenu = foundMenu;
       inGame = playing;
@@ -207,6 +223,100 @@ export function startBridge(): () => void {
     );
     observer.setEnabled(true);
     advisor = observer.snapshot;
+    strategy = new StrategyAdvisor(game, () => {
+      if (stopped) return;
+      publish();
+      warnStrategyThreats();
+      scheduleSiloFrame();
+    });
+  };
+
+  const warnStrategyThreats = () => {
+    const current = new Set<string>();
+    for (const kind of ["attack", "missile"] as const) {
+      const names: string[] = [];
+      for (const threat of strategy?.snapshot.threats ?? []) {
+        if (threat.kind !== kind) continue;
+        const key = `${kind}:${threat.id}`;
+        current.add(key);
+        if (!warnedThreats.has(key)) names.push(threat.name);
+      }
+      if (names.length)
+        postWarning(
+          kind === "attack"
+            ? "OPENFRONT_OVERLAY_HUMAN_ATTACK"
+            : "OPENFRONT_OVERLAY_MISSILE_THREAT",
+          [...new Set(names)].slice(0, MAX_WARNED_PLAYER_NAMES),
+        );
+    }
+    warnedThreats = current;
+  };
+
+  const updateStrategy = () => {
+    if (!requestedEnabled || !game || !observer || !advisor.enabled) {
+      strategy?.dispose();
+      strategy = null;
+      warnedThreats.clear();
+      return;
+    }
+    strategy?.poll(observer.strategyIndex());
+  };
+
+  const publishBuildMarkers = (force = false) => {
+    const buildMarkers: (EnemySiloMarker & { type: UnitType })[] = [];
+    try {
+      if (requestedEnabled && game && advisor.enabled && !game.isCatchingUp()) {
+        for (const [id, build] of (strategy?.snapshot.builds ?? []).entries()) {
+          if (
+            build.placement !== "valid" ||
+            build.tile === null ||
+            !build.affordable ||
+            build.paused
+          )
+            continue;
+          if (game.ownerID(build.tile) !== game.myPlayer()?.smallID()) continue;
+          const transform = buildMenu?.transformHandler;
+          if (
+            !transform ||
+            typeof transform.worldToScreenCoordinates !== "function"
+          )
+            throw new Error(
+              "Missing BuildMenu.transformHandler for build placements.",
+            );
+          const screen = transform.worldToScreenCoordinates({
+            x: game.x(build.tile) + 0.5,
+            y: game.y(build.tile) + 0.5,
+          });
+          if (!Number.isFinite(screen.x) || !Number.isFinite(screen.y))
+            throw new Error("Invalid projected build placement.");
+          buildMarkers.push({
+            id,
+            type: build.type,
+            x: screen.x,
+            y: screen.y,
+            radius: 12,
+          });
+        }
+      }
+      lastBuildError = null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== lastBuildError) {
+        console.error(
+          "[OpenFront Overlay] Cannot project build placements:",
+          error,
+        );
+        lastBuildError = message;
+      }
+      buildMarkers.length = 0;
+    }
+    const signature = JSON.stringify(buildMarkers);
+    if (!force && signature === lastBuildSignature) return;
+    lastBuildSignature = signature;
+    window.postMessage(
+      { type: "OPENFRONT_OVERLAY_BUILDS", buildMarkers, controlId },
+      window.location.origin,
+    );
   };
 
   const collectBetrayals = (args: unknown[]) => {
@@ -923,6 +1033,7 @@ export function startBridge(): () => void {
 
   const publish = () => {
     if (stopped) return;
+    publishBuildMarkers();
     publishPirateMarkers();
     publishAbandonedMarkers();
     let status: "idle" | "waiting" | "playing" | "unavailable" = "idle";
@@ -960,6 +1071,10 @@ export function startBridge(): () => void {
         status,
         troops,
         advisor,
+        strategy:
+          requestedEnabled && advisor.enabled
+            ? (strategy?.snapshot ?? null)
+            : null,
         controlId,
         missileSilos,
         playerLists: {
@@ -997,6 +1112,9 @@ export function startBridge(): () => void {
     }
     observer?.dispose();
     observer = null;
+    strategy?.dispose();
+    strategy = null;
+    warnedThreats.clear();
     advisor = emptyAdvisor();
     enableObserver();
     publish();
@@ -1006,7 +1124,12 @@ export function startBridge(): () => void {
       stopped ||
       !inGame ||
       !game ||
-      !(hasEnemySilos || hasPirates || hasAbandoned) ||
+      !(
+        hasEnemySilos ||
+        hasPirates ||
+        hasAbandoned ||
+        strategy?.snapshot.builds.some((b) => b.tile !== null)
+      ) ||
       siloFrame !== null
     )
       return;
@@ -1016,6 +1139,7 @@ export function startBridge(): () => void {
       publishSiloMarkers();
       publishPirateMarkers();
       publishAbandonedMarkers();
+      publishBuildMarkers();
       scheduleSiloFrame();
     });
   };
@@ -1023,17 +1147,20 @@ export function startBridge(): () => void {
     discover();
     enableObserver();
     observer?.poll();
+    updateStrategy();
     warnIncomingBoats();
     trackPirates();
     scanRichPlayers();
     scanInactiveNeighbors();
     warnTraitorNeighbors();
     publish();
+    warnStrategyThreats();
     scheduleSiloFrame();
   };
   const stop = () => {
     stopped = true;
     observer?.dispose();
+    strategy?.dispose();
     window.clearInterval(timer);
     if (siloFrame !== null) window.cancelAnimationFrame(siloFrame);
     window.removeEventListener("message", control);

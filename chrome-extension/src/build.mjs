@@ -51,6 +51,7 @@ await build({
         const allowed = new Set([
           `${root}chrome-extension/src/Main.ts`,
           `${root}chrome-extension/src/Observer.ts`,
+          `${root}chrome-extension/src/Strategy.ts`,
           `${root}src/client/advisor/GamePhase.ts`,
           `${root}src/client/advisor/SpatialIndex.ts`,
           `${root}packages/engine-api/src/game/GameTypes.ts`,
