@@ -57,5 +57,77 @@
   "phase_economy": { "message": "Phase: Economy" },
   "phase_contested": { "message": "Phase: Contested" },
   "phase_nuclear": { "message": "Phase: Nuclear" },
-  "phase_endgame": { "message": "Phase: Endgame" }
+  "phase_endgame": { "message": "Phase: Endgame" },
+  "economyAdvisor": { "message": "Economy advisor" },
+  "defenseAdvisor": { "message": "Defense advisor" },
+  "strategyChecking": {
+    "message": "Checking current build costs and placements..."
+  },
+  "strategyUnavailable": {
+    "message": "Advice unavailable on this client. See diagnostic below."
+  },
+  "strategyNoBuild": {
+    "message": "No new economic building recommended (existing construction and disabled buildings are excluded)."
+  },
+  "strategyNoThreats": {
+    "message": "No observed human attacks, overwhelming hostile neighbors, or nuclear threats."
+  },
+  "buildCity": { "message": "City" },
+  "buildPort": { "message": "Port" },
+  "buildFactory": { "message": "Factory" },
+  "buildDefensePost": { "message": "Defense Post" },
+  "buildSAM": { "message": "SAM Launcher" },
+  "buildAffordable": { "message": "{unit} affordable now - {cost} gold" },
+  "buildSaving": {
+    "message": "Save for {unit} - {cost} gold; need {missing} more"
+  },
+  "buildPaused": { "message": "Hold economy spending: {unit} ({cost} gold)" },
+  "placement_checking": {
+    "message": "Placement checking; no validated location yet."
+  },
+  "placement_valid": {
+    "message": "A valid location is marked on the map. Build manually."
+  },
+  "placement_not_found": {
+    "message": "No valid location found among sampled sites. Affordability alone does not mean you can build here."
+  },
+  "constructionTime": { "message": "Construction: {seconds}s." },
+  "constructionUnknown": { "message": "Construction time unavailable." },
+  "samPrecaution": {
+    "message": "Precautionary infrastructure coverage only. Cooldowns, missile paths and saturation affect interception; a new SAM may not finish before impact."
+  },
+  "reason_foundation": {
+    "message": "Heuristic: establish your first City for troop capacity."
+  },
+  "reason_capacity": {
+    "message": "Heuristic: grow troop capacity; high reserves favor another City."
+  },
+  "reason_trade": {
+    "message": "Heuristic: add coastal trade infrastructure. Income depends on trade partners and routes."
+  },
+  "reason_production": {
+    "message": "Heuristic: balance Factories with Ports for trade production. This is not a guaranteed return on investment."
+  },
+  "reason_frontier": {
+    "message": "Cover the threatening player's frontier from a setback position; avoid duplicating nearby posts."
+  },
+  "reason_coverage": {
+    "message": "Protect economic buildings outside existing completed SAM coverage."
+  },
+  "threat_attack": {
+    "message": "Human attack underway: {name} - {troops} committed troops."
+  },
+  "threat_neighbor": {
+    "message": "Potential danger: hostile human neighbor {name} has at least twice your available troops. No attack implied."
+  },
+  "threat_capability": {
+    "message": "Nuclear precaution: {name} has an active or constructing missile silo. No launch implied."
+  },
+  "threat_missile": {
+    "message": "Missile threat from {name}: observed target or blast area overlaps your territory."
+  },
+  "humanAttackWarning": { "message": "Human attack underway from {name}!" },
+  "missileThreatWarning": {
+    "message": "Missile threatening your territory from {name}! New defenses may not finish in time."
+  }
 }
