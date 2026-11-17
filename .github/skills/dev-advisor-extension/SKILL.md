@@ -178,8 +178,9 @@ warnings use `2147483647`. These are not browser top-layer elements.
   This is polling-based attribution, not an authoritative capture event stream.
   A warship with more than ten attributed captures gets a warning and red circle.
   **Monitor pirated tradeships** starts checked and gates these UI indicators.
-- **Show team attacks** starts checked and displays total nonretreating outgoing
-  and incoming attacks above the local player and actual teammates. Attack
+- **Show other players' attacks** starts checked and displays total nonretreating outgoing
+  and incoming attacks above other living humans and nations, never the local player
+  or tribes, regardless of team or friendship. Attack
   totals are sampled at the 500 ms poll cadence; cached player references are
   reprojected from their current name locations per animation frame. A state snapshot also includes markers so
   initial activation cannot lose the first update before the UI is enabled.

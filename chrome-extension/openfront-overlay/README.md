@@ -32,12 +32,12 @@ suggestion: per-recipient cooldowns can still prevent a donation.
 Temporary allies are not treated as teammates. Retreating or empty attacks do
 not qualify.
 
-**Show team attacks** starts checked and displays click-through markers above
-your and your living teammates' territory labels: blue up arrows show total
+**Show other players' attacks** starts checked and displays click-through markers above
+other living players' and nations' territory labels: blue up arrows show total
 outgoing troops and orange down arrows show total incoming troops. Totals include
 land expansion and tribe attacks but exclude retreating attacks. They refresh
-every 500 ms and follow the camera between polls. Temporary allies are not
-teammates; in free-for-all only your own attacks are shown. Markers disappear
+every 500 ms and follow the camera between polls. Your own markers and tribe
+markers are excluded in both team and free-for-all games. Markers disappear
 when the advisor is disabled, the game ends, or analysis is catching up. The
 checkbox hides them without changing game state.
 

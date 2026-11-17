@@ -1775,8 +1775,6 @@ var OpenFrontOverlay = (function(exports) {
 				if (!inGame || !game || !requestedEnabled || !advisor.enabled || advisor.status !== "active" || game.isCatchingUp()) return;
 				const me = game.myPlayer();
 				if (!me) return;
-				const team = me.team();
-				const teamGame = game.config().gameConfig().gameMode === GameMode.Team;
 				const players = game.players();
 				if (!Array.isArray(players) || players.length > 512) throw new Error("Invalid player roster.");
 				const sum = (attacks) => {
@@ -1790,7 +1788,7 @@ var OpenFrontOverlay = (function(exports) {
 				};
 				const ids = /* @__PURE__ */ new Set();
 				for (const player of players) {
-					if (!player.isAlive() || player.smallID() !== me.smallID() && (!teamGame || !sameTeam(team, player.team()))) continue;
+					if (!player.isAlive() || player.smallID() === me.smallID() || player.type() === PlayerType.Bot) continue;
 					const incoming = sum(player.incomingAttacks());
 					const outgoing = sum(player.outgoingAttacks());
 					if (incoming || outgoing) {

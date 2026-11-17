@@ -1,8 +1,4 @@
-import {
-  GameMode,
-  PlayerType,
-  UnitType,
-} from "@openfront/engine-api/game/GameTypes";
+import { PlayerType, UnitType } from "@openfront/engine-api/game/GameTypes";
 import { GameUpdateType } from "@openfront/engine-api/game/GameUpdates";
 import { emptyAdvisor, GameObserver, rawTroops, sameTeam } from "./Observer";
 import type { AdvisorSnapshot, RemoteGame, RemotePlayer } from "./Observer";
@@ -1069,8 +1065,6 @@ export function startBridge(): () => void {
         return;
       const me = game.myPlayer();
       if (!me) return;
-      const team = me.team();
-      const teamGame = game.config().gameConfig().gameMode === GameMode.Team;
       const players = game.players();
       if (!Array.isArray(players) || players.length > 512)
         throw new Error("Invalid player roster.");
@@ -1088,8 +1082,8 @@ export function startBridge(): () => void {
       for (const player of players) {
         if (
           !player.isAlive() ||
-          (player.smallID() !== me.smallID() &&
-            (!teamGame || !sameTeam(team, player.team())))
+          player.smallID() === me.smallID() ||
+          player.type() === PlayerType.Bot
         )
           continue;
         const incoming = sum(player.incomingAttacks());

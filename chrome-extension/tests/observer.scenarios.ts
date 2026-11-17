@@ -1491,7 +1491,7 @@ void test("reference phase frontier and team-victory evidence keeps its boundary
   );
 });
 
-void test("team attack markers aggregate live attacks, follow camera and clear safely", () => {
+void test("other-player attack markers exclude self and tribes, aggregate and follow camera", () => {
   const f = fixture();
   f.me.team = f.ally.team = () => "red";
   f.enemy.team = () => "blue";
@@ -1507,7 +1507,9 @@ void test("team attack markers aggregate live attacks, follow camera and clear s
     { troops: 50, attackerID: 2, retreating: true },
   ];
   f.enemy.outgoingAttacks = () => [
+    { troops: 100, targetID: 0, retreating: false },
     { troops: 999, targetID: 1, retreating: false },
+    { troops: 500, targetID: 1, retreating: true },
   ];
   let interval: (() => void) | null = null;
   const listeners = new Map<string, (event: MessageEvent) => void>();
@@ -1567,7 +1569,7 @@ void test("team attack markers aggregate live attacks, follow camera and clear s
     const state = () =>
       messages.filter((m) => m.type === "OPENFRONT_OVERLAY_STATE").at(-1)!;
     assert.deepEqual(state().teamAttackMarkers, [
-      { id: 1, x: 20, y: -2, incoming: 0, outgoing: 300 },
+      { id: 2, x: 40, y: -2, incoming: 0, outgoing: 1099 },
       { id: 3, x: 60, y: -2, incoming: 40, outgoing: 0 },
     ]);
     assert.equal(frames.size, 1);
@@ -1578,7 +1580,7 @@ void test("team attack markers aggregate live attacks, follow camera and clear s
     const projected = messages
       .filter((m) => m.type === "OPENFRONT_OVERLAY_TEAM_ATTACKS")
       .at(-1)!;
-    assert.equal(projected.teamAttackMarkers?.[0].x, 25);
+    assert.equal(projected.teamAttackMarkers?.[0].x, 45);
     const count = messages.length;
     const [nextID, nextFrame] = frames.entries().next().value!;
     frames.delete(nextID);
@@ -1592,8 +1594,8 @@ void test("team attack markers aggregate live attacks, follow camera and clear s
     interval!();
     assert.deepEqual(
       state().teamAttackMarkers?.map((m) => m.id),
-      [1],
-      "allies are excluded",
+      [2, 3],
+      "temporary allies and enemies are included",
     );
     f.ally.team = () => "red";
     const config = f.game.config;
@@ -1604,16 +1606,38 @@ void test("team attack markers aggregate live attacks, follow camera and clear s
     interval!();
     assert.deepEqual(
       state().teamAttackMarkers?.map((m) => m.id),
-      [1],
-      "FFA shows only the local player",
+      [2, 3],
+      "FFA still includes other players, never self",
     );
     f.game.config = config;
     interval!();
     assert.deepEqual(
       state().teamAttackMarkers?.map((m) => m.id),
-      [1, 3],
-      "disconnected teammates retain team identity",
+      [2, 3],
+      "teammates are included regardless of connection",
     );
+    f.enemy.type = () => PlayerType.Bot;
+    interval!();
+    assert.deepEqual(
+      state().teamAttackMarkers?.map((m) => m.id),
+      [3],
+      "tribes are excluded",
+    );
+    f.enemy.type = () => PlayerType.Nation;
+    interval!();
+    assert.deepEqual(
+      state().teamAttackMarkers?.map((m) => m.id),
+      [2, 3],
+      "nations are included",
+    );
+    f.enemy.isAlive = () => false;
+    interval!();
+    assert.deepEqual(
+      state().teamAttackMarkers?.map((m) => m.id),
+      [3],
+      "dead players are excluded",
+    );
+    f.enemy.isAlive = () => true;
     f.setCatchup(true);
     interval!();
     assert.deepEqual(state().teamAttackMarkers, []);
@@ -1621,7 +1645,7 @@ void test("team attack markers aggregate live attacks, follow camera and clear s
     interval!();
     assert.deepEqual(
       state().teamAttackMarkers?.map((m) => m.id),
-      [1, 3],
+      [2, 3],
     );
     listeners.get("message")!({
       source: fakeWindow,
