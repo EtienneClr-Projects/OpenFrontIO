@@ -87,7 +87,7 @@ function fixture(size = 32) {
     isCatchingUp: () => catchup,
     config: () => ({
       maxTroops: () => cap,
-      gameConfig: () => ({ gameMode: GameMode.Team }),
+      gameConfig: () => ({ gameMode: GameMode.Team, donateTroops: true }),
       percentageTilesOwnedToWin: () => 80,
       doomsdayClockConfig: () => ({ enabled: clockEnabled }),
       nukeMagnitudes: () => ({ outer: 3 }),
@@ -95,8 +95,13 @@ function fixture(size = 32) {
     }),
   };
   me.incomingAttacks = () =>
-    incoming ? [{ troops: incoming, attackerID: enemy.smallID() }] : [];
-  me.outgoingAttacks = () => (outgoing ? [{ troops: outgoing }] : []);
+    incoming
+      ? [{ troops: incoming, attackerID: enemy.smallID(), retreating: false }]
+      : [];
+  me.outgoingAttacks = () =>
+    outgoing
+      ? [{ troops: outgoing, targetID: enemy.smallID(), retreating: false }]
+      : [];
   me.buildables = async (_tile, types) =>
     types.map((type) => ({ type, cost: 125000n, canBuild: false }));
   const queued = new Map<number, () => void>();
@@ -876,6 +881,82 @@ void test("opt-in, raw integer snapshot, incoming totals and safe original updat
   assert.throws(() => rawTroops(Number.MAX_SAFE_INTEGER + 1));
 });
 
+void test("team support follows active attacks, strict capacity and local PUSH guidance", () => {
+  const f = fixture();
+  f.me.team = f.ally.team = () => "red";
+  f.me.troops = () => 900;
+  f.ally.troops = () => 799;
+  let attack = { troops: 10, targetID: 2, retreating: false };
+  f.ally.outgoingAttacks = () => [attack];
+  const refresh = () => {
+    f.game.update([]);
+    f.drain();
+    return f.observer.snapshot.teammatesNeedingTroops.map((p) => p.id);
+  };
+  f.observer.setEnabled(true);
+  f.drain();
+  assert.deepEqual(
+    f.observer.snapshot.teammatesNeedingTroops.map((p) => p.id),
+    [3],
+  );
+  f.ally.troops = () => 800;
+  assert.deepEqual(refresh(), [], "exactly 80% does not qualify");
+  f.ally.troops = () => 799;
+  attack = { ...attack, retreating: true };
+  assert.deepEqual(refresh(), [], "retreating is not pushing");
+  attack = { ...attack, retreating: false, troops: 0 };
+  assert.deepEqual(refresh(), [], "empty attacks do not qualify");
+  attack = { ...attack, troops: 10, targetID: 1 };
+  assert.deepEqual(refresh(), [], "attacking a teammate does not qualify");
+  attack = { ...attack, targetID: 2 };
+  f.enemy.isAlive = () => false;
+  assert.deepEqual(refresh(), [], "dead targets do not qualify");
+  f.enemy.isAlive = () => true;
+  f.ally.team = () => null;
+  f.me.isFriendly = () => true;
+  assert.deepEqual(refresh(), [], "temporary allies are not teammates");
+  f.ally.team = () => "red";
+  f.ally.state.isDisconnected = true;
+  assert.deepEqual(
+    refresh(),
+    [3],
+    "disconnection does not change team identity",
+  );
+  f.ally.isAlive = () => false;
+  assert.deepEqual(refresh(), [], "dead teammates do not qualify");
+  f.ally.isAlive = () => true;
+  f.setIncoming(1);
+  assert.deepEqual(refresh(), [], "local RETAIN suppresses the suggestion");
+  f.setIncoming(0);
+  f.me.troops = () => 420;
+  assert.deepEqual(refresh(), [], "local PUSH threshold is strict");
+  f.me.troops = () => 900;
+  assert.deepEqual(refresh(), [3]);
+  f.setCatchup(true);
+  f.observer.poll();
+  assert.deepEqual(f.observer.snapshot.teammatesNeedingTroops, []);
+  f.setCatchup(false);
+  f.observer.poll();
+  f.drain();
+  assert.deepEqual(
+    f.observer.snapshot.teammatesNeedingTroops.map((p) => p.id),
+    [3],
+  );
+  const config = f.game.config;
+  f.game.config = () => ({
+    ...config(),
+    gameConfig: () => ({ gameMode: GameMode.Team, donateTroops: false }),
+  });
+  assert.deepEqual(refresh(), [], "disabled human donations are excluded");
+  f.game.config = () => ({
+    ...config(),
+    gameConfig: () => ({ gameMode: GameMode.FFA, donateTroops: true }),
+  });
+  assert.deepEqual(refresh(), [], "FFA never suggests team donations");
+  f.observer.setEnabled(false);
+  assert.deepEqual(f.observer.snapshot.teammatesNeedingTroops, []);
+});
+
 void test("bounded sliced baseline retains every delta across updates before publishing", () => {
   const f = fixture(100000);
   f.observer.setEnabled(true);
@@ -1408,6 +1489,154 @@ void test("reference phase frontier and team-victory evidence keeps its boundary
     "economy",
     "inactive silo is not a nuclear phase trigger",
   );
+});
+
+void test("team attack markers aggregate live attacks, follow camera and clear safely", () => {
+  const f = fixture();
+  f.me.team = f.ally.team = () => "red";
+  f.enemy.team = () => "blue";
+  f.ally.state.isDisconnected = true;
+  f.me.isFriendly = () => true;
+  f.me.outgoingAttacks = () => [
+    { troops: 100, targetID: 0, retreating: false },
+    { troops: 200, targetID: 2, retreating: false },
+    { troops: 700, targetID: 2, retreating: true },
+  ];
+  f.ally.incomingAttacks = () => [
+    { troops: 40, attackerID: 2, retreating: false },
+    { troops: 50, attackerID: 2, retreating: true },
+  ];
+  f.enemy.outgoingAttacks = () => [
+    { troops: 999, targetID: 1, retreating: false },
+  ];
+  let interval: (() => void) | null = null;
+  const listeners = new Map<string, (event: MessageEvent) => void>();
+  const frames = new Map<number, (time: number) => void>();
+  let frameID = 0;
+  let cameraX = 0;
+  let playing = true;
+  const messages: {
+    type: string;
+    teamAttackMarkers?: {
+      id: number;
+      x: number;
+      y: number;
+      incoming: number;
+      outgoing: number;
+    }[];
+  }[] = [];
+  const fakeWindow = {
+    location: { origin: "https://openfront.io" },
+    postMessage: (message: (typeof messages)[number]) => messages.push(message),
+    setInterval: (callback: () => void) => {
+      interval = callback;
+      return 1;
+    },
+    clearInterval: () => {},
+    requestAnimationFrame: (callback: (time: number) => void) => {
+      frames.set(++frameID, callback);
+      return frameID;
+    },
+    cancelAnimationFrame: (id: number) => frames.delete(id),
+    addEventListener: (name: string, callback: (event: MessageEvent) => void) =>
+      listeners.set(name, callback),
+    removeEventListener: (name: string) => listeners.delete(name),
+  };
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: fakeWindow,
+  });
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      body: { classList: { contains: () => playing } },
+      querySelector: () => ({
+        game: f.game,
+        transformHandler: {
+          scale: 2,
+          worldToScreenCoordinates: ({ x, y }: { x: number; y: number }) => ({
+            x: x * 10 + cameraX,
+            y: y * 10,
+          }),
+        },
+      }),
+    },
+  });
+  const stop = startBridge();
+  try {
+    const state = () =>
+      messages.filter((m) => m.type === "OPENFRONT_OVERLAY_STATE").at(-1)!;
+    assert.deepEqual(state().teamAttackMarkers, [
+      { id: 1, x: 20, y: -2, incoming: 0, outgoing: 300 },
+      { id: 3, x: 60, y: -2, incoming: 40, outgoing: 0 },
+    ]);
+    assert.equal(frames.size, 1);
+    cameraX = 5;
+    const [id, callback] = frames.entries().next().value!;
+    frames.delete(id);
+    callback(16);
+    const projected = messages
+      .filter((m) => m.type === "OPENFRONT_OVERLAY_TEAM_ATTACKS")
+      .at(-1)!;
+    assert.equal(projected.teamAttackMarkers?.[0].x, 25);
+    const count = messages.length;
+    const [nextID, nextFrame] = frames.entries().next().value!;
+    frames.delete(nextID);
+    nextFrame(32);
+    assert.equal(
+      messages.length,
+      count,
+      "unchanged projections are deduplicated",
+    );
+    f.ally.team = () => null;
+    interval!();
+    assert.deepEqual(
+      state().teamAttackMarkers?.map((m) => m.id),
+      [1],
+      "allies are excluded",
+    );
+    f.ally.team = () => "red";
+    const config = f.game.config;
+    f.game.config = () => ({
+      ...config(),
+      gameConfig: () => ({ gameMode: GameMode.FFA, donateTroops: true }),
+    });
+    interval!();
+    assert.deepEqual(
+      state().teamAttackMarkers?.map((m) => m.id),
+      [1],
+      "FFA shows only the local player",
+    );
+    f.game.config = config;
+    interval!();
+    assert.deepEqual(
+      state().teamAttackMarkers?.map((m) => m.id),
+      [1, 3],
+      "disconnected teammates retain team identity",
+    );
+    f.setCatchup(true);
+    interval!();
+    assert.deepEqual(state().teamAttackMarkers, []);
+    f.setCatchup(false);
+    interval!();
+    assert.deepEqual(
+      state().teamAttackMarkers?.map((m) => m.id),
+      [1, 3],
+    );
+    listeners.get("message")!({
+      source: fakeWindow,
+      origin: "https://openfront.io",
+      data: { type: "OPENFRONT_OVERLAY_CONTROL", enabled: false, requestId: 1 },
+    } as MessageEvent);
+    assert.deepEqual(state().teamAttackMarkers, []);
+    playing = false;
+    interval!();
+    assert.deepEqual(state().teamAttackMarkers, []);
+  } finally {
+    stop();
+    delete (globalThis as { window?: unknown }).window;
+    delete (globalThis as { document?: unknown }).document;
+  }
 });
 
 void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabled reset", () => {

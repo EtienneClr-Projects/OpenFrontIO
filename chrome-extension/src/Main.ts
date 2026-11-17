@@ -1,4 +1,8 @@
-import { PlayerType, UnitType } from "@openfront/engine-api/game/GameTypes";
+import {
+  GameMode,
+  PlayerType,
+  UnitType,
+} from "@openfront/engine-api/game/GameTypes";
 import { GameUpdateType } from "@openfront/engine-api/game/GameUpdates";
 import { emptyAdvisor, GameObserver, rawTroops, sameTeam } from "./Observer";
 import type { AdvisorSnapshot, RemoteGame, RemotePlayer } from "./Observer";
@@ -43,6 +47,21 @@ interface RemoteRichCandidate extends RemotePlayer {
 interface NamedPlayer {
   id: number;
   name: string;
+}
+
+interface TeamAttack {
+  player: RemotePlayer;
+  id: number;
+  outgoing: number;
+  incoming: number;
+}
+
+interface TeamAttackMarker {
+  id: number;
+  x: number;
+  y: number;
+  outgoing: number;
+  incoming: number;
 }
 
 type WarningType =
@@ -132,6 +151,10 @@ export function startBridge(): () => void {
   let requestedEnabled = false;
   let controlId = 0;
   let siloFrame: number | null = null;
+  let teamAttacks: TeamAttack[] = [];
+  let lastTeamAttackSignature = "[]";
+  let lastTeamAttackError: string | null = null;
+  let lastTeamProjectionError: string | null = null;
 
   const discover = () => {
     try {
@@ -194,6 +217,7 @@ export function startBridge(): () => void {
       warnedRichIds = new Set();
       warnedAbandonedIds = new Set();
       abandonedRichPlayers = [];
+      teamAttacks = [];
       lastAbandonedSignature = "[]";
       hasAbandoned = false;
       lastSiloSignature = null;
@@ -1031,11 +1055,149 @@ export function startBridge(): () => void {
     );
   };
 
+  const scanTeamAttacks = () => {
+    teamAttacks = [];
+    try {
+      if (
+        !inGame ||
+        !game ||
+        !requestedEnabled ||
+        !advisor.enabled ||
+        advisor.status !== "active" ||
+        game.isCatchingUp()
+      )
+        return;
+      const me = game.myPlayer();
+      if (!me) return;
+      const team = me.team();
+      const teamGame = game.config().gameConfig().gameMode === GameMode.Team;
+      const players = game.players();
+      if (!Array.isArray(players) || players.length > 512)
+        throw new Error("Invalid player roster.");
+      const sum = (attacks: { troops: number; retreating?: boolean }[]) => {
+        if (!Array.isArray(attacks)) throw new Error("Invalid attacks.");
+        let total = 0;
+        for (const attack of attacks) {
+          if (typeof attack.retreating !== "boolean")
+            throw new Error("Invalid attack retreat state.");
+          if (!attack.retreating) total += rawTroops(attack.troops);
+        }
+        return rawTroops(total);
+      };
+      const ids = new Set<number>();
+      for (const player of players) {
+        if (
+          !player.isAlive() ||
+          (player.smallID() !== me.smallID() &&
+            (!teamGame || !sameTeam(team, player.team())))
+        )
+          continue;
+        const incoming = sum(player.incomingAttacks());
+        const outgoing = sum(player.outgoingAttacks());
+        if (incoming || outgoing) {
+          const id = player.smallID();
+          if (!Number.isSafeInteger(id) || id <= 0 || ids.has(id))
+            throw new Error("Invalid player ID.");
+          ids.add(id);
+          teamAttacks.push({ player, id, incoming, outgoing });
+        }
+      }
+      teamAttacks.sort((a, b) => a.id - b.id);
+      lastTeamAttackError = null;
+    } catch (error) {
+      teamAttacks = [];
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== lastTeamAttackError) {
+        console.error("[OpenFront Overlay] Cannot read team attacks:", error);
+        lastTeamAttackError = message;
+      }
+    }
+  };
+
+  const publishTeamAttackMarkers = () => {
+    if (stopped) return;
+    const markers: TeamAttackMarker[] = [];
+    try {
+      if (
+        inGame &&
+        game &&
+        requestedEnabled &&
+        advisor.enabled &&
+        advisor.status === "active" &&
+        !game.isCatchingUp() &&
+        teamAttacks.length
+      ) {
+        const transform = buildMenu?.transformHandler;
+        if (
+          !transform ||
+          typeof transform.worldToScreenCoordinates !== "function" ||
+          !Number.isFinite(transform.scale) ||
+          transform.scale <= 0
+        )
+          throw new Error("Missing BuildMenu.transformHandler.");
+        for (const { player, id, incoming, outgoing } of teamAttacks) {
+          if (typeof player.nameLocation !== "function")
+            throw new Error("Missing player.nameLocation().");
+          const location = player.nameLocation();
+          if (!location) continue;
+          if (
+            !Number.isFinite(location.x) ||
+            !Number.isFinite(location.y) ||
+            !Number.isFinite(location.size) ||
+            location.size < 0
+          )
+            throw new Error("Invalid player name location.");
+          const screen = transform.worldToScreenCoordinates({
+            x: location.x,
+            y: location.y,
+          });
+          const y =
+            screen.y -
+            Math.max(32, Math.min(90, location.size * transform.scale * 0.3));
+          if (!Number.isFinite(screen.x) || !Number.isFinite(y))
+            throw new Error("Invalid projected player position.");
+          if (Math.abs(screen.x) > 100000 || Math.abs(y) > 100000) continue;
+          markers.push({
+            id,
+            x: screen.x,
+            y,
+            incoming,
+            outgoing,
+          });
+        }
+      }
+      lastTeamProjectionError = null;
+    } catch (error) {
+      markers.length = 0;
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== lastTeamProjectionError) {
+        console.error(
+          "[OpenFront Overlay] Cannot project team attacks:",
+          error,
+        );
+        lastTeamProjectionError = message;
+      }
+    }
+    const signature = JSON.stringify(markers);
+    if (signature === lastTeamAttackSignature) return markers;
+    lastTeamAttackSignature = signature;
+    window.postMessage(
+      {
+        type: "OPENFRONT_OVERLAY_TEAM_ATTACKS",
+        teamAttackMarkers: markers,
+        controlId,
+      },
+      window.location.origin,
+    );
+    return markers;
+  };
+
   const publish = () => {
     if (stopped) return;
     publishBuildMarkers();
     publishPirateMarkers();
     publishAbandonedMarkers();
+    const teamAttackMarkers = publishTeamAttackMarkers();
     let status: "idle" | "waiting" | "playing" | "unavailable" = "idle";
     let troops: number | null = null;
     try {
@@ -1077,6 +1239,7 @@ export function startBridge(): () => void {
             : null,
         controlId,
         missileSilos,
+        teamAttackMarkers,
         playerLists: {
           richPlayers: requestedEnabled ? richPlayers : [],
           traitorNeighbors: requestedEnabled ? traitorNeighbors : [],
@@ -1100,6 +1263,7 @@ export function startBridge(): () => void {
     observedTraitors.clear();
     richPlayers = [];
     traitorNeighbors = [];
+    teamAttacks = [];
     if (!game) {
       if (!discoveryError) {
         advisor = emptyAdvisor(
@@ -1128,6 +1292,7 @@ export function startBridge(): () => void {
         hasEnemySilos ||
         hasPirates ||
         hasAbandoned ||
+        teamAttacks.length > 0 ||
         strategy?.snapshot.builds.some((b) => b.tile !== null)
       ) ||
       siloFrame !== null
@@ -1140,6 +1305,7 @@ export function startBridge(): () => void {
       publishPirateMarkers();
       publishAbandonedMarkers();
       publishBuildMarkers();
+      publishTeamAttackMarkers();
       scheduleSiloFrame();
     });
   };
@@ -1147,6 +1313,7 @@ export function startBridge(): () => void {
     discover();
     enableObserver();
     observer?.poll();
+    scanTeamAttacks();
     updateStrategy();
     warnIncomingBoats();
     trackPirates();

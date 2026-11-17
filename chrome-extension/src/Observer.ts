@@ -28,6 +28,7 @@ export interface AdvisorSnapshot {
   recommendation: "push" | "retain" | null;
   context: AdviceContext | null;
   neighbors: { id: number; name: string; friendly: boolean; troops: number }[];
+  teammatesNeedingTroops: { id: number; name: string }[];
   error?: string;
 }
 
@@ -40,6 +41,7 @@ export interface RemotePlayer {
     { type: UnitType; cost: bigint | number; canBuild: number | false }[]
   >;
   smallID(): number;
+  nameLocation?(): { x: number; y: number; size: number } | undefined;
   displayName(): string;
   type(): PlayerType;
   team(): string | null;
@@ -52,7 +54,11 @@ export interface RemotePlayer {
     attackerID: number;
     retreating?: boolean;
   }[];
-  outgoingAttacks(): { troops: number }[];
+  outgoingAttacks(): {
+    troops: number;
+    targetID: number;
+    retreating: boolean;
+  }[];
   isTraitor(): boolean;
   state: { isDisconnected: boolean; inDoomsdayClock: boolean };
 }
@@ -81,7 +87,7 @@ export interface RemoteConfig {
   defensePostRange?(): number;
   samRange?(level: number): number;
   maxTroops(player: RemotePlayer): number;
-  gameConfig(): { gameMode: GameMode };
+  gameConfig(): { gameMode: GameMode; donateTroops: boolean };
   percentageTilesOwnedToWin(seconds: number): number;
   doomsdayClockConfig(): { enabled: boolean };
   nukeMagnitudes(type: UnitType): { outer: number };
@@ -151,6 +157,7 @@ export function emptyAdvisor(
     recommendation: null,
     context: null,
     neighbors: [],
+    teammatesNeedingTroops: [],
   };
 }
 
@@ -424,7 +431,57 @@ export function analyze(
         friendly: p.friendly || (me.team !== null && p.team === me.team),
       }))
       .sort((a, b) => a.id - b.id),
+    teammatesNeedingTroops: [],
   };
+}
+
+function teammatesNeedingTroops(
+  game: RemoteGame,
+  observation: AdvisorObservation,
+): AdvisorSnapshot["teammatesNeedingTroops"] {
+  const me = observation.players.find((p) => p.id === observation.myID)!;
+  const config = game.config();
+  const gameConfig = config.gameConfig();
+  if (gameConfig.gameMode !== GameMode.Team || me.team === null) return [];
+  const players = new Map(observation.players.map((p) => [p.id, p]));
+  const result: AdvisorSnapshot["teammatesNeedingTroops"] = [];
+  for (const remote of game.players()) {
+    const teammate = players.get(remote.smallID());
+    if (
+      !teammate ||
+      teammate.id === me.id ||
+      !teammate.alive ||
+      !sameTeam(me.team, teammate.team)
+    )
+      continue;
+    if (
+      teammate.type === PlayerType.Human &&
+      !bool(gameConfig.donateTroops, "troop donations enabled")
+    )
+      continue;
+    const cap = rawTroops(config.maxTroops(remote));
+    if (cap === 0 || teammate.troops >= cap * 0.8) continue;
+    const attacks = remote.outgoingAttacks();
+    if (!Array.isArray(attacks))
+      throw new UnsupportedClient("Invalid attacks.");
+    const attacking = attacks.some((attack) => {
+      if (!Number.isSafeInteger(attack.targetID) || attack.targetID <= 0)
+        throw new UnsupportedClient("Invalid attack target.");
+      const retreating = bool(attack.retreating, "attack retreating");
+      const target = players.get(attack.targetID);
+      return (
+        rawTroops(attack.troops) > 0 &&
+        !retreating &&
+        target !== undefined &&
+        target.alive &&
+        target.id !== teammate.id &&
+        !sameTeam(me.team, target.team)
+      );
+    });
+    if (attacking)
+      result.push({ id: teammate.id, name: teammate.name.slice(0, 200) });
+  }
+  return result.sort((a, b) => a.id - b.id);
 }
 
 export interface ObserverScheduler {
@@ -622,7 +679,14 @@ export class GameObserver {
 
   /** Once guidance is shown, transient catch-up/indexing keeps it instead of flickering. */
   private pause(status: "indexing" | "catchup"): void {
-    if (this.snapshot.status === "active") return;
+    if (this.snapshot.status === "active") {
+      if (this.snapshot.teammatesNeedingTroops.length) {
+        this.snapshot = { ...this.snapshot, teammatesNeedingTroops: [] };
+        this.lastTick = -1;
+        this.emit();
+      }
+      return;
+    }
     this.snapshot = emptyAdvisor(status, true);
     this.emit();
   }
@@ -688,7 +752,13 @@ export class GameObserver {
     const tick = this.game.ticks();
     if (tick === this.lastTick) return;
     const previousIncoming = this.snapshot.incoming;
-    this.snapshot = analyze(observe(this.game), this.game, this.spatial);
+    const observation = observe(this.game);
+    this.snapshot = analyze(observation, this.game, this.spatial);
+    if (this.snapshot.recommendation === "push")
+      this.snapshot.teammatesNeedingTroops = teammatesNeedingTroops(
+        this.game,
+        observation,
+      );
     this.lastTick = tick;
     this.emit(
       this.snapshot.incoming !== previousIncoming &&

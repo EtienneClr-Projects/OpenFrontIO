@@ -19,6 +19,7 @@
     "message": "An enemy warship has stolen more than 10 of your trade ships!"
   },
   "watchInactiveNeighbors": { "message": "Watch inactive neighbors" },
+  "showTeamAttacks": { "message": "Show team attacks" },
   "inactiveNeighborWarning": {
     "message": "Your neighbor {name} is inactive. Take their land!"
   },
@@ -46,6 +47,9 @@
   },
   "strongNeighbors": { "message": "Stronger bordering players" },
   "noStrongNeighbors": { "message": "-" },
+  "teammatesNeedTroops": {
+    "message": "Attacking teammates could use troops:"
+  },
   "richPlayers": { "message": "Rich players (25M+ gold)" },
   "noRichPlayers": { "message": "-" },
   "traitorNeighbors": { "message": "Betraying neighbors (halved defense)" },

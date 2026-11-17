@@ -20,6 +20,9 @@
   let monitorPirates = true;
   let watchRichPlayers = true;
   let watchInactiveNeighbors = true;
+  let showTeamAttacks = true;
+  let teamAttackLayer = null;
+  const teamAttackElements = new Map();
   // Each kind of map marker gets its own fixed, click-through layer.
   const markerKinds = {
     silo: {
@@ -142,6 +145,7 @@
     "richPlayerWarning",
     "abandonedRichPlayerWarning",
     "watchInactiveNeighbors",
+    "showTeamAttacks",
     "inactiveNeighborWarning",
     "traitorNeighborWarning",
     "firstEnemySiloWarning",
@@ -156,6 +160,7 @@
     "advisor_error",
     "strongNeighbors",
     "noStrongNeighbors",
+    "teammatesNeedTroops",
     "richPlayers",
     "noRichPlayers",
     "traitorNeighbors",
@@ -218,6 +223,7 @@
     recommendation: null,
     context: null,
     neighbors: [],
+    teammatesNeedingTroops: [],
   };
   let advisor = defaultAdvisor;
   const emptyPlayerLists = { richPlayers: [], traitorNeighbors: [] };
@@ -265,6 +271,10 @@
           Number.isSafeInteger(neighbor.troops) &&
           neighbor.troops >= 0,
       ) &&
+      Array.isArray(value.teammatesNeedingTroops) &&
+      validPlayerList(value.teammatesNeedingTroops) &&
+      (value.teammatesNeedingTroops.length === 0 ||
+        (value.status === "active" && value.recommendation === "push")) &&
       (value.status !== "active" ||
         (value.cap !== null &&
           value.incoming !== null &&
@@ -381,6 +391,85 @@
       ids.add(marker.id);
     }
     return true;
+  }
+
+  function validTeamAttackMarkers(markers) {
+    if (!Array.isArray(markers) || markers.length > 512) return false;
+    const ids = new Set();
+    return markers.every((marker) => {
+      if (
+        !marker ||
+        !Number.isSafeInteger(marker.id) ||
+        marker.id <= 0 ||
+        ids.has(marker.id) ||
+        !Number.isFinite(marker.x) ||
+        Math.abs(marker.x) > 100000 ||
+        !Number.isFinite(marker.y) ||
+        Math.abs(marker.y) > 100000 ||
+        !Number.isSafeInteger(marker.incoming) ||
+        marker.incoming < 0 ||
+        !Number.isSafeInteger(marker.outgoing) ||
+        marker.outgoing < 0 ||
+        (!marker.incoming && !marker.outgoing)
+      )
+        return false;
+      ids.add(marker.id);
+      return true;
+    });
+  }
+
+  function syncTeamAttacks(markers) {
+    if (!teamAttackLayer) return;
+    teamAttackLayer.style.display =
+      enabled && showTeamAttacks ? "block" : "none";
+    const ids = new Set();
+    for (const marker of markers) {
+      ids.add(marker.id);
+      let item = teamAttackElements.get(marker.id);
+      if (!item) {
+        item = node("div", undefined, teamAttackLayer);
+        item.dataset.openfrontTeamAttack = String(marker.id);
+        item.style.position = "absolute";
+        item.style.transform = "translate(-50%, -100%)";
+        item.style.display = "flex";
+        item.style.gap = "6px";
+        item.style.padding = "2px 5px";
+        item.style.borderRadius = "4px";
+        item.style.background = "#101827e8";
+        item.style.font = "700 14px/1.3 system-ui, sans-serif";
+        item.style.whiteSpace = "nowrap";
+        item.outgoing = node("span", undefined, item);
+        item.outgoing.style.color = "#3fa9f5";
+        item.incoming = node("span", undefined, item);
+        item.incoming.style.color = "#ffad4d";
+        teamAttackElements.set(marker.id, item);
+      }
+      item.style.left = `${marker.x}px`;
+      item.style.top = `${marker.y}px`;
+      item.outgoing.hidden = marker.outgoing === 0;
+      item.incoming.hidden = marker.incoming === 0;
+      item.outgoing.textContent = `↑ ${troopFormatter.format(marker.outgoing / 10)}`;
+      item.incoming.textContent = `↓ ${troopFormatter.format(marker.incoming / 10)}`;
+    }
+    for (const [id, item] of teamAttackElements) {
+      if (ids.has(id)) continue;
+      item.remove();
+      teamAttackElements.delete(id);
+    }
+  }
+
+  function createTeamAttackLayer() {
+    if (document.getElementById("openfront-team-attacks")) return;
+    teamAttackLayer = node("div");
+    teamAttackLayer.id = "openfront-team-attacks";
+    teamAttackLayer.setAttribute("aria-hidden", "true");
+    teamAttackLayer.style.position = "fixed";
+    teamAttackLayer.style.inset = "0";
+    teamAttackLayer.style.overflow = "hidden";
+    teamAttackLayer.style.zIndex = "2147483646";
+    teamAttackLayer.style.pointerEvents = "none";
+    teamAttackLayer.style.display = "none";
+    document.body.appendChild(teamAttackLayer);
   }
 
   function createMarkerLayer(kind) {
@@ -589,6 +678,7 @@
     panel.pirateMonitorLabel.hidden = minimized;
     panel.richWatchLabel.hidden = minimized;
     panel.inactiveWatchLabel.hidden = minimized;
+    panel.teamAttackLabel.hidden = minimized;
     panel.body.hidden = minimized;
     const terminal = ["finished", "unsupported", "error"].includes(
       advisor.status,
@@ -616,6 +706,15 @@
     if (advisor.status !== "active") return;
     const troops = (raw) => troopFormatter.format(raw / 10);
     node("h3", advisorLabels[`phase_${advisor.context}`], panel.details);
+    if (advisor.teammatesNeedingTroops.length) {
+      const alert = node("div", undefined, panel.details);
+      alert.className = "teammate-support";
+      alert.setAttribute("role", "status");
+      node("strong", advisorLabels.teammatesNeedTroops, alert);
+      const teammates = node("ul", undefined, alert);
+      for (const teammate of advisor.teammatesNeedingTroops)
+        node("li", teammate.name, teammates);
+    }
     node("h3", advisorLabels.strongNeighbors, panel.details);
     if (advisor.neighbors.length === 0) {
       node("p", advisorLabels.noStrongNeighbors, panel.details);
@@ -801,6 +900,7 @@
       li.friendly { color: #86efac; }
       li.hostile { color: #fca5a5; }
       [data-urgent="true"] { border-left: 3px solid #f6a34b; padding-left: 8px; }
+      .teammate-support { color: #e9d5ff; border: 1px solid #c084fc; border-left: 4px solid #c084fc; background: #3b175a; border-radius: 6px; margin: 8px 0; padding: 8px; }
       .strategy-card { border: 1px solid #526985; border-radius: 6px; margin: 8px 0; padding: 8px; }
       button:focus-visible { outline: 2px solid #f6cf64; outline-offset: 2px; }
       .silo-visibility { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; cursor: pointer; }
@@ -864,6 +964,22 @@
     inactiveWatch.addEventListener("change", () => {
       watchInactiveNeighbors = inactiveWatch.checked;
     });
+    const teamAttackLabel = node("label", undefined, settings);
+    teamAttackLabel.className = "silo-visibility";
+    const teamAttackCheckbox = node("input", undefined, teamAttackLabel);
+    teamAttackCheckbox.type = "checkbox";
+    teamAttackCheckbox.checked = true;
+    teamAttackCheckbox.setAttribute(
+      "aria-label",
+      advisorLabels.showTeamAttacks,
+    );
+    node("span", advisorLabels.showTeamAttacks, teamAttackLabel);
+    teamAttackCheckbox.addEventListener("change", () => {
+      showTeamAttacks = teamAttackCheckbox.checked;
+      if (teamAttackLayer)
+        teamAttackLayer.style.display =
+          enabled && showTeamAttacks ? "block" : "none";
+    });
     const collapse = node("button", advisorLabels.collapseAdvisor, header);
     collapse.type = "button";
     const body = node("div", undefined, section);
@@ -877,6 +993,7 @@
       pirateMonitorLabel,
       richWatchLabel,
       inactiveWatchLabel,
+      teamAttackLabel,
       details,
     };
     collapse.addEventListener("click", () => {
@@ -886,6 +1003,7 @@
       if (!enabled) displayedRecommendation = null;
       if (!enabled) {
         clearStrategyDecorations();
+        syncTeamAttacks([]);
       }
       renderAdvisor();
       syncHudColor();
@@ -1033,11 +1151,29 @@
     }
     hudControlPanel = null;
     clearStrategyDecorations();
+    syncTeamAttacks([]);
   }
 
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== window.location.origin)
       return;
+    if (event.data?.type === "OPENFRONT_OVERLAY_TEAM_ATTACKS") {
+      if (
+        !validTeamAttackMarkers(event.data.teamAttackMarkers) ||
+        !Number.isSafeInteger(event.data.controlId) ||
+        event.data.controlId < 0
+      ) {
+        console.error("[OpenFront Overlay] Invalid team attack markers.");
+        return;
+      }
+      if (event.data.controlId < requestId) return;
+      syncTeamAttacks(
+        enabled && document.body?.classList.contains("in-game")
+          ? event.data.teamAttackMarkers
+          : [],
+      );
+      return;
+    }
     if (event.data?.type === "OPENFRONT_OVERLAY_BUILDS") {
       const markers = event.data.buildMarkers;
       if (
@@ -1182,6 +1318,13 @@
       return;
     }
     if (
+      event.data.teamAttackMarkers !== undefined &&
+      !validTeamAttackMarkers(event.data.teamAttackMarkers)
+    ) {
+      console.error("[OpenFront Overlay] Invalid team attack markers.");
+      return;
+    }
+    if (
       event.data.controlId !== undefined &&
       (!Number.isSafeInteger(event.data.controlId) || event.data.controlId < 0)
     ) {
@@ -1210,6 +1353,13 @@
     )
       syncMarkers("build", []);
     if (!enabled || status !== "playing") clearStrategyDecorations();
+    syncTeamAttacks(
+      enabled &&
+        status === "playing" &&
+        document.body?.classList.contains("in-game")
+        ? (event.data.teamAttackMarkers ?? [])
+        : [],
+    );
     if (status === "idle") {
       enabled = false;
       advisor = defaultAdvisor;
@@ -1236,6 +1386,7 @@
     createMarkerLayer("pirate");
     createMarkerLayer("abandoned");
     createMarkerLayer("build");
+    createTeamAttackLayer();
     startHudColorSync();
     console.info("[OpenFront Overlay] Advisor overlay mounted.");
   }

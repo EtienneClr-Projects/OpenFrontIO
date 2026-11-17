@@ -285,7 +285,8 @@ var OpenFrontOverlay = (function(exports) {
 			incoming: null,
 			recommendation: null,
 			context: null,
-			neighbors: []
+			neighbors: [],
+			teammatesNeedingTroops: []
 		};
 	}
 	function validateGame(game) {
@@ -460,8 +461,36 @@ var OpenFrontOverlay = (function(exports) {
 				name: p.name.slice(0, 200),
 				troops: rawTroops(p.troops),
 				friendly: p.friendly || me.team !== null && p.team === me.team
-			})).sort((a, b) => a.id - b.id)
+			})).sort((a, b) => a.id - b.id),
+			teammatesNeedingTroops: []
 		};
+	}
+	function teammatesNeedingTroops(game, observation) {
+		const me = observation.players.find((p) => p.id === observation.myID);
+		const config = game.config();
+		const gameConfig = config.gameConfig();
+		if (gameConfig.gameMode !== GameMode.Team || me.team === null) return [];
+		const players = new Map(observation.players.map((p) => [p.id, p]));
+		const result = [];
+		for (const remote of game.players()) {
+			const teammate = players.get(remote.smallID());
+			if (!teammate || teammate.id === me.id || !teammate.alive || !sameTeam(me.team, teammate.team)) continue;
+			if (teammate.type === PlayerType.Human && !bool(gameConfig.donateTroops, "troop donations enabled")) continue;
+			const cap = rawTroops(config.maxTroops(remote));
+			if (cap === 0 || teammate.troops >= cap * .8) continue;
+			const attacks = remote.outgoingAttacks();
+			if (!Array.isArray(attacks)) throw new UnsupportedClient("Invalid attacks.");
+			if (attacks.some((attack) => {
+				if (!Number.isSafeInteger(attack.targetID) || attack.targetID <= 0) throw new UnsupportedClient("Invalid attack target.");
+				const retreating = bool(attack.retreating, "attack retreating");
+				const target = players.get(attack.targetID);
+				return rawTroops(attack.troops) > 0 && !retreating && target !== void 0 && target.alive && target.id !== teammate.id && !sameTeam(me.team, target.team);
+			})) result.push({
+				id: teammate.id,
+				name: teammate.name.slice(0, 200)
+			});
+		}
+		return result.sort((a, b) => a.id - b.id);
 	}
 	var scheduler = {
 		now: () => performance.now(),
@@ -606,7 +635,17 @@ var OpenFrontOverlay = (function(exports) {
 		}
 		/** Once guidance is shown, transient catch-up/indexing keeps it instead of flickering. */
 		pause(status) {
-			if (this.snapshot.status === "active") return;
+			if (this.snapshot.status === "active") {
+				if (this.snapshot.teammatesNeedingTroops.length) {
+					this.snapshot = {
+						...this.snapshot,
+						teammatesNeedingTroops: []
+					};
+					this.lastTick = -1;
+					this.emit();
+				}
+				return;
+			}
 			this.snapshot = emptyAdvisor(status, true);
 			this.emit();
 		}
@@ -665,7 +704,9 @@ var OpenFrontOverlay = (function(exports) {
 			const tick = this.game.ticks();
 			if (tick === this.lastTick) return;
 			const previousIncoming = this.snapshot.incoming;
-			this.snapshot = analyze(observe(this.game), this.game, this.spatial);
+			const observation = observe(this.game);
+			this.snapshot = analyze(observation, this.game, this.spatial);
+			if (this.snapshot.recommendation === "push") this.snapshot.teammatesNeedingTroops = teammatesNeedingTroops(this.game, observation);
 			this.lastTick = tick;
 			this.emit(this.snapshot.incoming !== previousIncoming && this.snapshot.incoming > 0);
 		}
@@ -1146,6 +1187,10 @@ var OpenFrontOverlay = (function(exports) {
 		let requestedEnabled = false;
 		let controlId = 0;
 		let siloFrame = null;
+		let teamAttacks = [];
+		let lastTeamAttackSignature = "[]";
+		let lastTeamAttackError = null;
+		let lastTeamProjectionError = null;
 		const discover = () => {
 			try {
 				readDiscovery();
@@ -1198,6 +1243,7 @@ var OpenFrontOverlay = (function(exports) {
 				warnedRichIds = /* @__PURE__ */ new Set();
 				warnedAbandonedIds = /* @__PURE__ */ new Set();
 				abandonedRichPlayers = [];
+				teamAttacks = [];
 				lastAbandonedSignature = "[]";
 				hasAbandoned = false;
 				lastSiloSignature = null;
@@ -1723,11 +1769,106 @@ var OpenFrontOverlay = (function(exports) {
 				missileSilos
 			}, window.location.origin);
 		};
+		const scanTeamAttacks = () => {
+			teamAttacks = [];
+			try {
+				if (!inGame || !game || !requestedEnabled || !advisor.enabled || advisor.status !== "active" || game.isCatchingUp()) return;
+				const me = game.myPlayer();
+				if (!me) return;
+				const team = me.team();
+				const teamGame = game.config().gameConfig().gameMode === GameMode.Team;
+				const players = game.players();
+				if (!Array.isArray(players) || players.length > 512) throw new Error("Invalid player roster.");
+				const sum = (attacks) => {
+					if (!Array.isArray(attacks)) throw new Error("Invalid attacks.");
+					let total = 0;
+					for (const attack of attacks) {
+						if (typeof attack.retreating !== "boolean") throw new Error("Invalid attack retreat state.");
+						if (!attack.retreating) total += rawTroops(attack.troops);
+					}
+					return rawTroops(total);
+				};
+				const ids = /* @__PURE__ */ new Set();
+				for (const player of players) {
+					if (!player.isAlive() || player.smallID() !== me.smallID() && (!teamGame || !sameTeam(team, player.team()))) continue;
+					const incoming = sum(player.incomingAttacks());
+					const outgoing = sum(player.outgoingAttacks());
+					if (incoming || outgoing) {
+						const id = player.smallID();
+						if (!Number.isSafeInteger(id) || id <= 0 || ids.has(id)) throw new Error("Invalid player ID.");
+						ids.add(id);
+						teamAttacks.push({
+							player,
+							id,
+							incoming,
+							outgoing
+						});
+					}
+				}
+				teamAttacks.sort((a, b) => a.id - b.id);
+				lastTeamAttackError = null;
+			} catch (error) {
+				teamAttacks = [];
+				const message = error instanceof Error ? error.message : String(error);
+				if (message !== lastTeamAttackError) {
+					console.error("[OpenFront Overlay] Cannot read team attacks:", error);
+					lastTeamAttackError = message;
+				}
+			}
+		};
+		const publishTeamAttackMarkers = () => {
+			if (stopped) return;
+			const markers = [];
+			try {
+				if (inGame && game && requestedEnabled && advisor.enabled && advisor.status === "active" && !game.isCatchingUp() && teamAttacks.length) {
+					const transform = buildMenu?.transformHandler;
+					if (!transform || typeof transform.worldToScreenCoordinates !== "function" || !Number.isFinite(transform.scale) || transform.scale <= 0) throw new Error("Missing BuildMenu.transformHandler.");
+					for (const { player, id, incoming, outgoing } of teamAttacks) {
+						if (typeof player.nameLocation !== "function") throw new Error("Missing player.nameLocation().");
+						const location = player.nameLocation();
+						if (!location) continue;
+						if (!Number.isFinite(location.x) || !Number.isFinite(location.y) || !Number.isFinite(location.size) || location.size < 0) throw new Error("Invalid player name location.");
+						const screen = transform.worldToScreenCoordinates({
+							x: location.x,
+							y: location.y
+						});
+						const y = screen.y - Math.max(32, Math.min(90, location.size * transform.scale * .3));
+						if (!Number.isFinite(screen.x) || !Number.isFinite(y)) throw new Error("Invalid projected player position.");
+						if (Math.abs(screen.x) > 1e5 || Math.abs(y) > 1e5) continue;
+						markers.push({
+							id,
+							x: screen.x,
+							y,
+							incoming,
+							outgoing
+						});
+					}
+				}
+				lastTeamProjectionError = null;
+			} catch (error) {
+				markers.length = 0;
+				const message = error instanceof Error ? error.message : String(error);
+				if (message !== lastTeamProjectionError) {
+					console.error("[OpenFront Overlay] Cannot project team attacks:", error);
+					lastTeamProjectionError = message;
+				}
+			}
+			const signature = JSON.stringify(markers);
+			if (signature === lastTeamAttackSignature) return markers;
+			lastTeamAttackSignature = signature;
+			window.postMessage({
+				type: "OPENFRONT_OVERLAY_TEAM_ATTACKS",
+				teamAttackMarkers: markers,
+				controlId
+			}, window.location.origin);
+			return markers;
+		};
 		const publish = () => {
 			if (stopped) return;
 			publishBuildMarkers();
 			publishPirateMarkers();
 			publishAbandonedMarkers();
+			const teamAttackMarkers = publishTeamAttackMarkers();
 			let status = "idle";
 			let troops = null;
 			try {
@@ -1763,6 +1904,7 @@ var OpenFrontOverlay = (function(exports) {
 				strategy: requestedEnabled && advisor.enabled ? strategy?.snapshot ?? null : null,
 				controlId,
 				missileSilos,
+				teamAttackMarkers,
 				playerLists: {
 					richPlayers: requestedEnabled ? richPlayers : [],
 					traitorNeighbors: requestedEnabled ? traitorNeighbors : []
@@ -1778,6 +1920,7 @@ var OpenFrontOverlay = (function(exports) {
 			observedTraitors.clear();
 			richPlayers = [];
 			traitorNeighbors = [];
+			teamAttacks = [];
 			if (!game) {
 				if (!discoveryError) advisor = emptyAdvisor(requestedEnabled ? "waiting" : "disabled", requestedEnabled);
 				publish();
@@ -1793,7 +1936,7 @@ var OpenFrontOverlay = (function(exports) {
 			publish();
 		};
 		const scheduleSiloFrame = () => {
-			if (stopped || !inGame || !game || !(hasEnemySilos || hasPirates || hasAbandoned || strategy?.snapshot.builds.some((b) => b.tile !== null)) || siloFrame !== null) return;
+			if (stopped || !inGame || !game || !(hasEnemySilos || hasPirates || hasAbandoned || teamAttacks.length > 0 || strategy?.snapshot.builds.some((b) => b.tile !== null)) || siloFrame !== null) return;
 			siloFrame = window.requestAnimationFrame(() => {
 				siloFrame = null;
 				if (!inGame || !game || stopped) return;
@@ -1801,6 +1944,7 @@ var OpenFrontOverlay = (function(exports) {
 				publishPirateMarkers();
 				publishAbandonedMarkers();
 				publishBuildMarkers();
+				publishTeamAttackMarkers();
 				scheduleSiloFrame();
 			});
 		};
@@ -1808,6 +1952,7 @@ var OpenFrontOverlay = (function(exports) {
 			discover();
 			enableObserver();
 			observer?.poll();
+			scanTeamAttacks();
 			updateStrategy();
 			warnIncomingBoats();
 			trackPirates();

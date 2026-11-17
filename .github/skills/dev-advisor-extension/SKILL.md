@@ -99,6 +99,7 @@ display boundary, not authentication.
 | `OPENFRONT_OVERLAY_BUILDS`           | Bridge to UI: changed projected, labeled build placements with `controlId`                        |
 | `OPENFRONT_OVERLAY_SILOS`            | Bridge to UI: changed projected silo marker array                                                 |
 | `OPENFRONT_OVERLAY_PIRATE_WARSHIPS`  | Bridge to UI: changed projected pirate marker array                                               |
+| `OPENFRONT_OVERLAY_TEAM_ATTACKS`     | Bridge to UI: changed projected, aggregated team attack markers with `controlId`                  |
 | `OPENFRONT_OVERLAY_FIRST_ENEMY_SILO` | Bridge to UI: first observed enemy silo in this game                                              |
 | `OPENFRONT_OVERLAY_INCOMING_BOAT`    | Bridge to UI: newly observed hostile transport targeting our territory                            |
 | `OPENFRONT_OVERLAY_PIRATE_ALERT`     | Bridge to UI: a tracked warship crosses the capture threshold                                     |
@@ -157,6 +158,12 @@ warnings use `2147483647`. These are not browser top-layer elements.
   using equal non-null team IDs, not `isFriendly()` (which includes temporary
   alliances). Apply this distinction to lists and alerts; disconnected teammates
   remain teammates. Other monitors retain their own friendship filters.
+- The purple teammate-support panel lists living teammates under 80% capacity
+  with nonretreating, nonempty attacks against living non-teammates, only
+  while the local recommendation is PUSH. It clears during catchup/indexing.
+  Human recipients are excluded when troop donations are disabled. The alert is
+  heuristic: per-recipient donation cooldowns are enforced in the engine and
+  are not established by this snapshot.
 - Silo detection selects active missile silos of living nonlocal, nonfriendly
   owners. Orange triangles follow their tile centers; off-screen positions
   intersect the center-to-target ray with an inset viewport rectangle.
@@ -171,13 +178,18 @@ warnings use `2147483647`. These are not browser top-layer elements.
   This is polling-based attribution, not an authoritative capture event stream.
   A warship with more than ten attributed captures gets a warning and red circle.
   **Monitor pirated tradeships** starts checked and gates these UI indicators.
-- Both checkboxes are hidden while minimized. Their values are local to the
+- **Show team attacks** starts checked and displays total nonretreating outgoing
+  and incoming attacks above the local player and actual teammates. Attack
+  totals are sampled at the 500 ms poll cadence; cached player references are
+  reprojected from their current name locations per animation frame. A state snapshot also includes markers so
+  initial activation cannot lose the first update before the UI is enabled.
+- The monitoring checkboxes are hidden while minimized. Their values are local to the
   content-script lifetime, not persisted Chrome settings. They do not send
   separate bridge controls. Bridge marker/alert detection requires advisor
   activation; minimizing clears marker production as well. Do not infer
   independent background monitoring from a checkbox being checked.
 
-Discovery and new-unit checks run every 500 ms. While silo or pirate markers
+Discovery and new-unit checks run every 500 ms. While silo, pirate or team attack markers
 exist, animation frames resample projected positions and post only changed
 arrays; full advisor snapshots do not run at frame rate. Detection latency and
 camera-follow latency are different paths.
@@ -286,7 +298,7 @@ Manual smoke checks:
 1. Confirm no Chrome extension errors and exactly one `#openfront-advisor-ui`.
 2. Enter a game: advice is initially on; test disable/reactivate during spawn.
    Compare phase/neighbors and troop-bar color with the game state.
-3. Verify both checkboxes appear only expanded and default checked. Test
+3. Verify the monitoring checkboxes appear only expanded and default checked. Test
    marker/warning gating, camera pan/zoom, off-screen arrows and click-through.
 4. Minimize: analysis and marker production stop. Reactivate, then leave/start
    another game: activation and detection state reset as implemented.

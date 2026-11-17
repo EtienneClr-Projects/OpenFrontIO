@@ -201,6 +201,7 @@ function activeAdvisor(extra = {}) {
     incoming: 1234,
     recommendation: "retain",
     context: "contested",
+    teammatesNeedingTroops: [],
     neighbors: [
       {
         id: 2,
@@ -515,6 +516,54 @@ await test("live player lists follow stronger neighbors and refresh without advi
   assert.equal(items().length, 0);
 });
 
+await test("team support alert updates, validates payloads, and clears with guidance", () => {
+  const { context, elements, send, errors } = createContext();
+  runInNewContext(source, context);
+  const snapshot = { status: "playing", troops: 90000 };
+  const alert = () =>
+    descendants(elements[0]).find(
+      (node) => node.className === "teammate-support",
+    );
+  const advisor = activeAdvisor({
+    recommendation: "push",
+    teammatesNeedingTroops: [{ id: 3, name: "<b>Teammate</b>" }],
+  });
+  send({ ...snapshot, advisor });
+  assert.equal(alert().attributes.role, "status");
+  assert.equal(
+    alert().children[0].textContent,
+    messages.teammatesNeedTroops.message,
+  );
+  assert.equal(alert().children[1].children[0].textContent, "<b>Teammate</b>");
+  assert.equal(alert().children[1].children[0].children.length, 0);
+  send({
+    ...snapshot,
+    advisor: { ...advisor, teammatesNeedingTroops: [{ id: 4, name: "Other" }] },
+  });
+  assert.equal(alert().children[1].children[0].textContent, "Other");
+  for (const teammatesNeedingTroops of [
+    null,
+    [{ id: -1, name: "bad" }],
+    [
+      { id: 3, name: "x" },
+      { id: 3, name: "duplicate" },
+    ],
+  ]) {
+    send({ ...snapshot, advisor: { ...advisor, teammatesNeedingTroops } });
+  }
+  send({ ...snapshot, advisor: { ...advisor, recommendation: "retain" } });
+  assert.equal(errors.length, 4);
+  assert.equal(alert().children[1].children[0].textContent, "Other");
+  send({
+    ...snapshot,
+    advisor: { ...advisor, teammatesNeedingTroops: [] },
+  });
+  assert.equal(alert(), undefined);
+  send({ ...snapshot, advisor });
+  send({ status: "idle", troops: null });
+  assert.equal(alert(), undefined);
+});
+
 await test("empty overlay lists display a simple dash below each title", () => {
   const { context, elements, send } = createContext();
   runInNewContext(source, context);
@@ -621,7 +670,7 @@ for (const readyState of ["loading", "interactive", "complete"]) {
       context.document.readyState = "interactive";
       listeners[0].callback();
     }
-    assert.equal(elements.length, 5);
+    assert.equal(elements.length, 6);
     assert.equal(elements[0].id, "openfront-advisor-ui");
     assert.equal(elements[0].dataset.minimized, "true");
     assert.equal(elements[1].id, "openfront-enemy-silos");
@@ -636,7 +685,7 @@ for (const readyState of ["loading", "interactive", "complete"]) {
     assert.match(style.textContent, /bottom: calc\(16px/);
     assert.doesNotMatch(style.textContent, /right: calc/);
     runInNewContext(source, context);
-    assert.equal(elements.length, 5);
+    assert.equal(elements.length, 6);
   });
 }
 
@@ -727,6 +776,74 @@ await test("enemy silo markers track screen coordinates and disappear when clear
     ),
     false,
   );
+});
+
+await test("team attack markers validate, follow updates, and obey the checkbox and lifecycle", () => {
+  const { context, elements, send, errors, controls } = createContext();
+  context.document.body.classList.add("in-game");
+  runInNewContext(source, context);
+  const first = { id: 3, x: 120, y: 80, incoming: 250, outgoing: 12340 };
+  send({
+    status: "playing",
+    troops: 100,
+    advisor: activeAdvisor(),
+    teamAttackMarkers: [first],
+  });
+  const layer = elements.find(
+    (element) => element.id === "openfront-team-attacks",
+  );
+  const marker = () =>
+    descendants(layer).find(
+      (element) => element.dataset.openfrontTeamAttack === "3",
+    );
+  const checkbox = descendants(elements[0]).find(
+    (element) =>
+      element.attributes["aria-label"] === messages.showTeamAttacks.message,
+  );
+  assert.equal(checkbox.checked, true);
+  assert.equal(layer.style.pointerEvents, "none");
+  assert.equal(layer.style.display, "block");
+  assert.equal(marker().style.left, "120px");
+  assert.equal(marker().children[0].textContent, `↑ ${displayedTroops(12340)}`);
+  assert.equal(marker().children[1].textContent, `↓ ${displayedTroops(250)}`);
+  assert.equal(marker().children[0].style.color, "#3fa9f5");
+  assert.equal(marker().children[1].style.color, "#ffad4d");
+  const post = (markers, controlId = 0) =>
+    send({
+      type: "OPENFRONT_OVERLAY_TEAM_ATTACKS",
+      teamAttackMarkers: markers,
+      controlId,
+    });
+  post([{ ...first, x: 140, incoming: 0 }]);
+  assert.equal(marker().style.left, "140px");
+  assert.equal(marker().children[1].hidden, true);
+  checkbox.checked = false;
+  checkbox.listeners.change();
+  assert.equal(layer.style.display, "none");
+  post([{ ...first, x: 150 }]);
+  checkbox.checked = true;
+  checkbox.listeners.change();
+  assert.equal(layer.style.display, "block");
+  assert.equal(marker().style.left, "150px");
+  for (const invalid of [
+    [{ ...first, incoming: -1 }],
+    [first, first],
+    [{ ...first, x: Infinity }],
+    [{ ...first, incoming: 0, outgoing: 0 }],
+  ])
+    post(invalid);
+  assert.equal(errors.length, 4);
+  assert.equal(marker().style.left, "150px");
+  const button = descendants(elements[0]).find(
+    (element) => element.tag === "button",
+  );
+  button.listeners.click();
+  assert.equal(checkbox.parentElement.hidden, true);
+  assert.equal(marker(), undefined);
+  post([first], controls.at(-1).data.requestId - 1);
+  assert.equal(marker(), undefined);
+  send({ status: "idle", troops: null });
+  assert.equal(layer.style.display, "none");
 });
 
 await test("first enemy silo warning appears in the center and fades", () => {
@@ -1266,7 +1383,7 @@ await test("advisor stays enabled while waiting for spawn", () => {
   assert.match(style.textContent, /\.settings \{[^}]*flex-wrap: wrap;/);
   assert.equal(
     nodes.find((element) => element.className === "settings").children.length,
-    4,
+    5,
   );
 });
 
@@ -1460,8 +1577,8 @@ await test("UI keeps accessible names and renders the silo visibility checkbox",
   runInNewContext(source, context);
   send({ status: "playing", troops: 42, advisor: activeAdvisor() });
   const nodes = descendants(elements[0]);
-  assert.equal(nodes.filter((element) => element.tag === "input").length, 4);
-  assert.equal(nodes.filter((element) => element.tag === "label").length, 4);
+  assert.equal(nodes.filter((element) => element.tag === "input").length, 5);
+  assert.equal(nodes.filter((element) => element.tag === "label").length, 5);
   assert.equal(
     nodes.some(
       (element) => element.textContent === messages.findEnemySilos.message,
@@ -1637,7 +1754,7 @@ await test("all phases and neighbor troop counts display correctly", () => {
         texts.some((text) => text.startsWith("Incoming attacks:")),
         false,
       );
-      assert.equal(elements.length, 5);
+      assert.equal(elements.length, 6);
     }
   }
 });

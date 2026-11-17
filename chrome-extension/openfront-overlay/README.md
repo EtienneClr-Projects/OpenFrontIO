@@ -23,6 +23,24 @@ Advice is on by default for each game. Click **Disable** to stop it; you will se
   inform the recommendation but are not listed in the overlay. It does not
   display PUSH or RETAIN text; the native troop bar turns green for PUSH.
 
+In team games, a purple panel alert lists living teammates who are actively
+attacking a living non-teammate and have less than 80% of their troop capacity.
+It appears only while the local recommendation is PUSH, and clears while
+analysis catches up or the advisor is disabled. Human teammates are excluded
+when troop donations are disabled in the game settings. This is a read-only
+suggestion: per-recipient cooldowns can still prevent a donation.
+Temporary allies are not treated as teammates. Retreating or empty attacks do
+not qualify.
+
+**Show team attacks** starts checked and displays click-through markers above
+your and your living teammates' territory labels: blue up arrows show total
+outgoing troops and orange down arrows show total incoming troops. Totals include
+land expansion and tribe attacks but exclude retreating attacks. They refresh
+every 500 ms and follow the camera between polls. Temporary allies are not
+teammates; in free-for-all only your own attacks are shown. Markers disappear
+when the advisor is disabled, the game ends, or analysis is catching up. The
+checkbox hides them without changing game state.
+
 Empty player lists display `-` below their titles; unavailable lists retain
 their diagnostic message.
 
