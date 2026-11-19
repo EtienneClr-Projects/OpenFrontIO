@@ -465,7 +465,8 @@ function teammatesNeedingTroops(
     if (!Array.isArray(attacks))
       throw new UnsupportedClient("Invalid attacks.");
     const attacking = attacks.some((attack) => {
-      if (!Number.isSafeInteger(attack.targetID) || attack.targetID <= 0)
+      // Target ID 0 is terra nullius (attack on unclaimed land).
+      if (!Number.isSafeInteger(attack.targetID) || attack.targetID < 0)
         throw new UnsupportedClient("Invalid attack target.");
       const retreating = bool(attack.retreating, "attack retreating");
       const target = players.get(attack.targetID);

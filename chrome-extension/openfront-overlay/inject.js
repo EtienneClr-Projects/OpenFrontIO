@@ -481,7 +481,7 @@ var OpenFrontOverlay = (function(exports) {
 			const attacks = remote.outgoingAttacks();
 			if (!Array.isArray(attacks)) throw new UnsupportedClient("Invalid attacks.");
 			if (attacks.some((attack) => {
-				if (!Number.isSafeInteger(attack.targetID) || attack.targetID <= 0) throw new UnsupportedClient("Invalid attack target.");
+				if (!Number.isSafeInteger(attack.targetID) || attack.targetID < 0) throw new UnsupportedClient("Invalid attack target.");
 				const retreating = bool(attack.retreating, "attack retreating");
 				const target = players.get(attack.targetID);
 				return rawTroops(attack.troops) > 0 && !retreating && target !== void 0 && target.alive && target.id !== teammate.id && !sameTeam(me.team, target.team);

@@ -906,6 +906,13 @@ void test("team support follows active attacks, strict capacity and local PUSH g
   assert.deepEqual(refresh(), [], "retreating is not pushing");
   attack = { ...attack, retreating: false, troops: 0 };
   assert.deepEqual(refresh(), [], "empty attacks do not qualify");
+  attack = { ...attack, troops: 10, targetID: 0 };
+  assert.deepEqual(
+    refresh(),
+    [],
+    "attacking unclaimed land (terra nullius) is valid but does not qualify",
+  );
+  assert.notEqual(f.observer.snapshot.status, "unsupported");
   attack = { ...attack, troops: 10, targetID: 1 };
   assert.deepEqual(refresh(), [], "attacking a teammate does not qualify");
   attack = { ...attack, targetID: 2 };

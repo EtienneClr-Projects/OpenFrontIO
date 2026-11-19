@@ -105,7 +105,11 @@ display boundary, not authentication.
 | `OPENFRONT_OVERLAY_PIRATE_ALERT`     | Bridge to UI: a tracked warship crosses the capture threshold                                     |
 
 Keep producers, consumers, validation, fixtures and tests aligned when changing
-a payload. `requestId`/`controlId` prevents stale acknowledgements from reversing
+a payload. Player `smallID` 0 is terra nullius: attack `targetID` may be 0
+(attacks on unclaimed land), while player and attacker IDs are always positive.
+Strict API guards that throw `UnsupportedClient` disable the whole panel, so
+verify each guard against engine output (`PlayerImpl.ts` attack updates).
+`requestId`/`controlId` prevents stale acknowledgements from reversing
 rapid toggles; preserve it.
 
 Persistent panel lists belong in polled state snapshots, not accumulated
