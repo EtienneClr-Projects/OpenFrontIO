@@ -9,7 +9,7 @@ import test from "node:test";
 import { AdvisorEngine } from "../../src/client/advisor/AdvisorEngine";
 import { gamePhase } from "../../src/client/advisor/GamePhase";
 import { SpatialIndex } from "../../src/client/advisor/SpatialIndex";
-import { isControl, startBridge } from "../src/Main";
+import { installCameraHook, isControl, startBridge } from "../src/Main";
 import { analyze, GameObserver, observe, rawTroops } from "../src/Observer";
 import type {
   AdvisorSnapshot,
@@ -1447,6 +1447,49 @@ void test("a second observer cannot duplicate wrappers and teardown retains the 
   assert.equal(f.game.update, original);
 });
 
+void test("camera hook preserves calls, errors, and later owners", () => {
+  const calls: unknown[] = [];
+  const failure = new Error("camera failed");
+  const original = function (this: unknown, x: number, y: number, z: number) {
+    calls.push([this, x, y, z]);
+    if (x === -1) throw failure;
+  };
+  const view = { setCameraState: original };
+  let frames = 0;
+  const hook = installCameraHook(view, () => {
+    frames++;
+  });
+  view.setCameraState(1, 2, 3);
+  assert.deepEqual(calls[0], [view, 1, 2, 3]);
+  assert.equal(frames, 1);
+  assert.throws(
+    () => view.setCameraState(-1, 2, 3),
+    (e) => e === failure,
+  );
+  assert.equal(frames, 1);
+  const alternate = {};
+  view.setCameraState.call(alternate, 4, 5, 6);
+  assert.deepEqual(calls[2], [alternate, 4, 5, 6]);
+  assert.equal(frames, 1);
+  const wrapped = view.setCameraState;
+  const otherOwner = (...args: [number, number, number]) =>
+    wrapped.apply(view, args);
+  view.setCameraState = otherOwner;
+  assert.equal(hook.isCurrent(), false);
+  hook.dispose();
+  assert.equal(view.setCameraState, otherOwner);
+  view.setCameraState(7, 8, 9);
+  assert.equal(frames, 1, "disposed nested hooks stop observing");
+  const second = installCameraHook(view, () => frames++);
+  assert.equal(second.isCurrent(), true);
+  second.dispose();
+  assert.equal(view.setCameraState, otherOwner);
+  const cleanView = { setCameraState: original };
+  const cleanHook = installCameraHook(cleanView, () => frames++);
+  cleanHook.dispose();
+  assert.equal(cleanView.setCameraState, original);
+});
+
 void test("wrapper preserves alternate receivers and absorbs failing host callbacks", () => {
   const f = fixture();
   const observer = new GameObserver(f.game, () => {
@@ -1691,11 +1734,29 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
     allySilos?: { id: number; x: number; y: number; radius: number }[];
   }[] = [];
   const errors: unknown[][] = [];
+  const markerFrames: {
+    controlId: number;
+    missileSilos: { id: number; x: number }[];
+  }[] = [];
+  let framePayload = "";
+  const frameTarget = {
+    setAttribute: (_name: string, value: string) => {
+      framePayload = value;
+    },
+    dispatchEvent: (event: Event) => {
+      assert.equal(event.type, "openfront-overlay-marker-frame");
+      markerFrames.push(JSON.parse(framePayload));
+      return true;
+    },
+  };
   const originalError = console.error;
   console.error = (...args) => {
     errors.push(args);
   };
   const fakeWindow = {
+    __webglView: undefined as
+      | { setCameraState: (x: number, y: number, zoom: number) => void }
+      | undefined,
     location: { origin: "https://openfront.io" },
     postMessage: (message: (typeof messages)[number], origin: string) => {
       assert.equal(origin, "https://openfront.io");
@@ -1734,6 +1795,7 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
     configurable: true,
     value: {
       body: { classList: { contains: () => inGame } },
+      getElementById: () => frameTarget,
       querySelector: () => {
         return found
           ? {
@@ -1842,7 +1904,44 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
       markerFrameCount,
       "unchanged markers are not republished",
     );
+    const renderView = {
+      setCameraState: (x: number, _y: number, _zoom: number) => {
+        cameraX = x;
+      },
+    };
+    const originalCamera = renderView.setCameraState;
+    fakeWindow.__webglView = renderView;
     interval!();
+    assert.equal(
+      animationFrames.size,
+      0,
+      "render hook replaces independent RAF",
+    );
+    renderView.setCameraState(70, 0, 1);
+    assert.equal(markerFrames.at(-1)?.missileSilos[0].x, 85);
+    assert.equal(markerFrames.at(-1)?.controlId, requestId);
+    renderView.setCameraState(90, 0, 1);
+    assert.equal(markerFrames.at(-1)?.missileSilos[0].x, 105);
+    const installedCamera = renderView.setCameraState;
+    const laterOwner = (x: number, y: number, zoom: number) =>
+      installedCamera.call(renderView, x, y, zoom);
+    renderView.setCameraState = laterOwner;
+    interval!();
+    assert.equal(renderView.setCameraState, laterOwner);
+    assert.equal(animationFrames.size, 1, "displaced hooks fall back to RAF");
+    const countAfterDisplacement = markerFrames.length;
+    renderView.setCameraState(100, 0, 1);
+    assert.equal(markerFrames.length, countAfterDisplacement);
+    interval!();
+    assert.equal(
+      renderView.setCameraState,
+      laterOwner,
+      "later owner is not wrapped",
+    );
+    fakeWindow.__webglView = undefined;
+    interval!();
+    assert.notEqual(renderView.setCameraState, originalCamera);
+    assert.equal(animationFrames.size, 1, "RAF resumes without render hook");
     assert.equal(
       messages.filter(
         (message) => message.type === "OPENFRONT_OVERLAY_FIRST_ENEMY_SILO",

@@ -75,6 +75,9 @@ function createContext(readyState = "complete") {
       setAttribute(key, value) {
         this.attributes[key] = value;
       },
+      getAttribute(key) {
+        return this.attributes[key] ?? null;
+      },
       addEventListener(event, callback) {
         this.listeners[event] = callback;
       },
@@ -882,6 +885,92 @@ await test("team attack markers validate, follow updates, and obey the checkbox 
   assert.equal(marker(), undefined);
   send({ status: "idle", troops: null });
   assert.equal(layer.style.display, "none");
+});
+
+await test("same-frame marker updates validate all kinds and respect controls", () => {
+  const { context, elements, send, errors, controls } = createContext();
+  context.document.body.classList.add("in-game");
+  runInNewContext(source, context);
+  send({
+    status: "playing",
+    troops: 100,
+    advisor: activeAdvisor(),
+    strategy: strategySnapshot(),
+  });
+  const host = elements[0];
+  const frame = {
+    controlId: 0,
+    frameSequence: 4,
+    missileSilos: [{ id: 1, x: 100, y: 120, radius: 12 }],
+    allySilos: [{ id: 2, x: 130, y: 120, radius: 12 }],
+    pirateWarships: [{ id: 3, x: 160, y: 120, radius: 12 }],
+    abandonedPlayers: [{ id: 4, x: 190, y: 120, radius: 80 }],
+    buildMarkers: [{ id: 0, type: "City", x: 220, y: 120, radius: 12 }],
+    teamAttackMarkers: [{ id: 5, x: 250, y: 120, incoming: 10, outgoing: 20 }],
+  };
+  const emit = (value) => {
+    host.setAttribute("data-openfront-marker-frame", value);
+    host.listeners["openfront-overlay-marker-frame"]();
+  };
+  emit(JSON.stringify(frame));
+  const marker = (id, key) =>
+    descendants(elements.find((element) => element.id === id)).find(
+      (element) => element.dataset[key] !== undefined,
+    );
+  const entries = [
+    ["openfront-enemy-silos", "openfrontEnemySilo", "100px"],
+    ["openfront-ally-silos", "openfrontAllySilo", "130px"],
+    ["openfront-pirate-warships", "openfrontPirateWarship", "160px"],
+    ["openfront-abandoned-territories", "openfrontAbandonedTerritory", "190px"],
+    ["openfront-build-placements", "openfrontBuildPlacement", "220px"],
+    ["openfront-team-attacks", "openfrontTeamAttack", "250px"],
+  ];
+  for (const [id, key, left] of entries)
+    assert.equal(marker(id, key).style.left, left);
+  frame.missileSilos[0].x = 900;
+  emit(JSON.stringify(frame));
+  assert.equal(marker(entries[0][0], entries[0][1]).dataset.offscreen, "true");
+  assert.equal(marker(entries[0][0], entries[0][1]).style.left, "784px");
+  send({
+    type: "OPENFRONT_OVERLAY_SILOS",
+    missileSilos: [{ ...frame.missileSilos[0], x: 100 }],
+    allySilos: frame.allySilos,
+    frameSequence: 3,
+  });
+  send({
+    status: "playing",
+    troops: 100,
+    advisor: activeAdvisor(),
+    missileSilos: [{ ...frame.missileSilos[0], x: 100 }],
+    teamAttackMarkers: [],
+    frameSequence: 3,
+  });
+  assert.equal(marker(entries[0][0], entries[0][1]).style.left, "784px");
+  assert.equal(marker(entries[5][0], entries[5][1]).style.left, "250px");
+  send({
+    type: "OPENFRONT_OVERLAY_SILOS",
+    missileSilos: [{ ...frame.missileSilos[0], x: 200 }],
+    allySilos: frame.allySilos,
+    frameSequence: 4,
+  });
+  assert.equal(marker(entries[0][0], entries[0][1]).style.left, "200px");
+  emit(JSON.stringify(frame));
+  emit("{");
+  emit(JSON.stringify({ ...frame, pirateWarships: [{ id: -1 }] }));
+  assert.equal(errors.length, 2);
+  assert.equal(marker(entries[0][0], entries[0][1]).style.left, "784px");
+  const button = descendants(host).find((element) => element.tag === "button");
+  button.listeners.click();
+  emit(JSON.stringify({ ...frame, controlId: controls.at(-1).data.requestId }));
+  assert.equal(marker(entries[4][0], entries[4][1]), undefined);
+  assert.equal(marker(entries[5][0], entries[5][1]), undefined);
+  button.listeners.click();
+  emit(JSON.stringify({ ...frame, controlId: controls.at(-1).data.requestId }));
+  assert.equal(
+    marker(entries[4][0], entries[4][1]),
+    undefined,
+    "pending activation ignores frames",
+  );
 });
 
 await test("first enemy silo warning appears in the center and fades", () => {

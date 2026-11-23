@@ -1137,6 +1137,27 @@ var OpenFrontOverlay = (function(exports) {
 			playerNames
 		} : { type }, window.location.origin);
 	}
+	function installCameraHook(view, onFrame) {
+		const original = view.setCameraState;
+		let active = true;
+		const wrapped = function(...args) {
+			const result = original.apply(this, args);
+			if (active && this === view) try {
+				onFrame();
+			} catch (error) {
+				console.error("[OpenFront Overlay] Cannot synchronize markers:", error);
+			}
+			return result;
+		};
+		view.setCameraState = wrapped;
+		return {
+			isCurrent: () => view.setCameraState === wrapped,
+			dispose: () => {
+				active = false;
+				if (view.setCameraState === wrapped) view.setCameraState = original;
+			}
+		};
+	}
 	function isControl(data) {
 		if (!data || typeof data !== "object") return false;
 		const value = data;
@@ -1192,11 +1213,21 @@ var OpenFrontOverlay = (function(exports) {
 		let lastTeamAttackSignature = "[]";
 		let lastTeamAttackError = null;
 		let lastTeamProjectionError = null;
+		let hookedView = null;
+		let cameraHook = null;
+		let displacedView = null;
+		let hadFrameMarkers = false;
+		let frameSequence = 0;
+		let warnedMissingCameraHook = false;
 		const discover = () => {
 			try {
 				readDiscovery();
 				discoveryError = null;
 			} catch (error) {
+				cameraHook?.dispose();
+				cameraHook = null;
+				hookedView = null;
+				displacedView = null;
 				observer?.dispose();
 				observer = null;
 				strategy?.dispose();
@@ -1215,6 +1246,12 @@ var OpenFrontOverlay = (function(exports) {
 			const foundMenu = playing ? document.querySelector("build-menu") : null;
 			const found = foundMenu?.game ?? null;
 			if (found !== game || playing !== inGame) {
+				cameraHook?.dispose();
+				cameraHook = null;
+				hookedView = null;
+				displacedView = null;
+				hadFrameMarkers = false;
+				warnedMissingCameraHook = false;
 				if (!playing || playing !== inGame || game !== null) requestedEnabled = playing;
 				observer?.dispose();
 				observer = null;
@@ -1293,7 +1330,7 @@ var OpenFrontOverlay = (function(exports) {
 			}
 			strategy?.poll(observer.strategyIndex());
 		};
-		const publishBuildMarkers = (force = false) => {
+		const publishBuildMarkers = (force = false, frame = false) => {
 			const buildMarkers = [];
 			try {
 				if (requestedEnabled && game && advisor.enabled && !game.isCatchingUp()) for (const [id, build] of (strategy?.snapshot.builds ?? []).entries()) {
@@ -1323,14 +1360,17 @@ var OpenFrontOverlay = (function(exports) {
 				}
 				buildMarkers.length = 0;
 			}
+			if (frame) return buildMarkers;
 			const signature = JSON.stringify(buildMarkers);
-			if (!force && signature === lastBuildSignature) return;
+			if (!force && signature === lastBuildSignature) return buildMarkers;
 			lastBuildSignature = signature;
 			window.postMessage({
 				type: "OPENFRONT_OVERLAY_BUILDS",
 				buildMarkers,
-				controlId
+				controlId,
+				frameSequence
 			}, window.location.origin);
+			return buildMarkers;
 		};
 		const collectBetrayals = (args) => {
 			try {
@@ -1631,7 +1671,8 @@ var OpenFrontOverlay = (function(exports) {
 			lastPirateSignature = signature;
 			window.postMessage({
 				type: "OPENFRONT_OVERLAY_PIRATE_WARSHIPS",
-				pirateWarships
+				pirateWarships,
+				frameSequence
 			}, window.location.origin);
 		};
 		const scanRichPlayers = () => {
@@ -1761,7 +1802,8 @@ var OpenFrontOverlay = (function(exports) {
 			lastAbandonedSignature = signature;
 			window.postMessage({
 				type: "OPENFRONT_OVERLAY_ABANDONED_TERRITORIES",
-				abandonedPlayers
+				abandonedPlayers,
+				frameSequence
 			}, window.location.origin);
 		};
 		const publishSiloMarkers = (force = false) => {
@@ -1772,7 +1814,8 @@ var OpenFrontOverlay = (function(exports) {
 			lastSiloSignature = signature;
 			window.postMessage({
 				type: "OPENFRONT_OVERLAY_SILOS",
-				...markers
+				...markers,
+				frameSequence
 			}, window.location.origin);
 		};
 		const scanTeamAttacks = () => {
@@ -1820,7 +1863,7 @@ var OpenFrontOverlay = (function(exports) {
 				}
 			}
 		};
-		const publishTeamAttackMarkers = () => {
+		const publishTeamAttackMarkers = (frame = false) => {
 			if (stopped) return;
 			const markers = [];
 			try {
@@ -1857,13 +1900,15 @@ var OpenFrontOverlay = (function(exports) {
 					lastTeamProjectionError = message;
 				}
 			}
+			if (frame) return markers;
 			const signature = JSON.stringify(markers);
 			if (signature === lastTeamAttackSignature) return markers;
 			lastTeamAttackSignature = signature;
 			window.postMessage({
 				type: "OPENFRONT_OVERLAY_TEAM_ATTACKS",
 				teamAttackMarkers: markers,
-				controlId
+				controlId,
+				frameSequence
 			}, window.location.origin);
 			return markers;
 		};
@@ -1907,6 +1952,7 @@ var OpenFrontOverlay = (function(exports) {
 				advisor,
 				strategy: requestedEnabled && advisor.enabled ? strategy?.snapshot ?? null : null,
 				controlId,
+				frameSequence,
 				...siloMarkers,
 				teamAttackMarkers,
 				playerLists: {
@@ -1927,6 +1973,7 @@ var OpenFrontOverlay = (function(exports) {
 			teamAttacks = [];
 			if (!game) {
 				if (!discoveryError) advisor = emptyAdvisor(requestedEnabled ? "waiting" : "disabled", requestedEnabled);
+				syncCameraHook();
 				publish();
 				return;
 			}
@@ -1937,10 +1984,11 @@ var OpenFrontOverlay = (function(exports) {
 			warnedThreats.clear();
 			advisor = emptyAdvisor();
 			enableObserver();
+			syncCameraHook();
 			publish();
 		};
 		const scheduleSiloFrame = () => {
-			if (stopped || !inGame || !game || !(hasEnemySilos || hasAllySilos || hasPirates || hasAbandoned || teamAttacks.length > 0 || strategy?.snapshot.builds.some((b) => b.tile !== null)) || siloFrame !== null) return;
+			if (stopped || !inGame || !game || hookedView !== null || !(hasEnemySilos || hasAllySilos || hasPirates || hasAbandoned || teamAttacks.length > 0 || strategy?.snapshot.builds.some((b) => b.tile !== null)) || siloFrame !== null) return;
 			siloFrame = window.requestAnimationFrame(() => {
 				siloFrame = null;
 				if (!inGame || !game || stopped) return;
@@ -1952,9 +2000,70 @@ var OpenFrontOverlay = (function(exports) {
 				scheduleSiloFrame();
 			});
 		};
+		const syncCameraHook = () => {
+			const view = window.__webglView;
+			if (!inGame || !game || !requestedEnabled) {
+				cameraHook?.dispose();
+				cameraHook = null;
+				hookedView = null;
+				return;
+			}
+			if (hookedView === view && cameraHook) {
+				if (cameraHook.isCurrent()) return;
+				cameraHook.dispose();
+				cameraHook = null;
+				hookedView = null;
+				displacedView = view ?? null;
+				console.warn("[OpenFront Overlay] Map render hook was replaced; using animation-frame marker tracking.");
+				warnedMissingCameraHook = true;
+				return;
+			}
+			if (view && view === displacedView) return;
+			cameraHook?.dispose();
+			cameraHook = null;
+			hookedView = null;
+			if (!view || typeof view.setCameraState !== "function") {
+				if (!warnedMissingCameraHook) {
+					console.warn("[OpenFront Overlay] Map render hook unavailable; using animation-frame marker tracking.");
+					warnedMissingCameraHook = true;
+				}
+				return;
+			}
+			warnedMissingCameraHook = false;
+			try {
+				cameraHook = installCameraHook(view, () => {
+					if (stopped || !requestedEnabled || !document.body?.classList.contains("in-game") || window.__webglView !== view) return;
+					if (!hadFrameMarkers && !hasEnemySilos && !hasAllySilos && !hasPirates && !hasAbandoned && teamAttacks.length === 0 && !strategy?.snapshot.builds.some((b) => b.tile !== null)) return;
+					const target = document.getElementById("openfront-advisor-ui");
+					if (!target) return;
+					const frame = {
+						controlId,
+						frameSequence: ++frameSequence,
+						...readSilos(),
+						pirateWarships: readPirateMarkers(),
+						abandonedPlayers: readAbandonedMarkers(),
+						buildMarkers: publishBuildMarkers(false, true),
+						teamAttackMarkers: publishTeamAttackMarkers(true)
+					};
+					hadFrameMarkers = frame.missileSilos.length > 0 || frame.allySilos.length > 0 || frame.pirateWarships.length > 0 || frame.abandonedPlayers.length > 0 || (frame.buildMarkers?.length ?? 0) > 0 || (frame.teamAttackMarkers?.length ?? 0) > 0;
+					target.setAttribute("data-openfront-marker-frame", JSON.stringify(frame));
+					target.dispatchEvent(new Event("openfront-overlay-marker-frame"));
+				});
+			} catch (error) {
+				displacedView = view;
+				console.error("[OpenFront Overlay] Cannot install map render hook; using animation-frame marker tracking:", error);
+				return;
+			}
+			hookedView = view;
+			if (siloFrame !== null) {
+				window.cancelAnimationFrame(siloFrame);
+				siloFrame = null;
+			}
+		};
 		const poll = () => {
 			discover();
 			enableObserver();
+			syncCameraHook();
 			observer?.poll();
 			scanTeamAttacks();
 			updateStrategy();
@@ -1969,6 +2078,7 @@ var OpenFrontOverlay = (function(exports) {
 		};
 		const stop = () => {
 			stopped = true;
+			cameraHook?.dispose();
 			observer?.dispose();
 			strategy?.dispose();
 			window.clearInterval(timer);
@@ -1988,6 +2098,7 @@ var OpenFrontOverlay = (function(exports) {
 		startBridge();
 	}
 	//#endregion
+	exports.installCameraHook = installCameraHook;
 	exports.isControl = isControl;
 	exports.startBridge = startBridge;
 	return exports;

@@ -1,6 +1,6 @@
 # OpenFront Overlay
 
-A standalone Chrome extension (Manifest V3). Version 0.3.3
+A standalone Chrome extension (Manifest V3). Version 0.3.4
 shows the advisor control at the bottom left. Each game starts with
 advice on, refreshed every 500 ms. Click the top-right **Disable** button to collapse
 the panel and stop observation, and **Activate** to turn it back on. Troop counts appear in the advisor's metrics.
@@ -64,6 +64,13 @@ of the page remains available to the game's controls.
 There are no automated actions, map focus, or snooze/dismiss controls.
 Economy and defense guidance below uses read-only worker queries; it never
 sends build or attack intents.
+
+Map markers use the game's camera transform and, when its current WebGL camera
+hook is available, update synchronously immediately before each map draw.
+They remain click-through overlays, with directional indicators for off-screen
+targets. On clients without the private hook, the extension logs a diagnostic
+and falls back to animation-frame tracking; exact frame alignment is not
+guaranteed in that mode.
 
 ## Economy and defense advisors
 

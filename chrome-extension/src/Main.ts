@@ -17,6 +17,10 @@ interface RemoteBuildMenu extends Element {
   transformHandler?: RemoteTransformHandler;
 }
 
+interface RemoteMapRenderer {
+  setCameraState(x: number, y: number, zoom: number): void;
+}
+
 export interface ProjectedMarker {
   id: number;
   x: number;
@@ -90,7 +94,38 @@ function postWarning(
 declare global {
   interface Window {
     __openfrontOverlayBridgeStarted?: boolean;
+    __webglView?: RemoteMapRenderer;
   }
+}
+
+export function installCameraHook(
+  view: RemoteMapRenderer,
+  onFrame: () => void,
+): { dispose: () => void; isCurrent: () => boolean } {
+  const original = view.setCameraState;
+  let active = true;
+  const wrapped: RemoteMapRenderer["setCameraState"] = function (
+    this: RemoteMapRenderer,
+    ...args
+  ) {
+    const result = original.apply(this, args);
+    if (active && this === view) {
+      try {
+        onFrame();
+      } catch (error) {
+        console.error("[OpenFront Overlay] Cannot synchronize markers:", error);
+      }
+    }
+    return result;
+  };
+  view.setCameraState = wrapped;
+  return {
+    isCurrent: () => view.setCameraState === wrapped,
+    dispose: () => {
+      active = false;
+      if (view.setCameraState === wrapped) view.setCameraState = original;
+    },
+  };
 }
 
 export function isControl(data: unknown): data is {
@@ -157,12 +192,22 @@ export function startBridge(): () => void {
   let lastTeamAttackSignature = "[]";
   let lastTeamAttackError: string | null = null;
   let lastTeamProjectionError: string | null = null;
+  let hookedView: RemoteMapRenderer | null = null;
+  let cameraHook: ReturnType<typeof installCameraHook> | null = null;
+  let displacedView: RemoteMapRenderer | null = null;
+  let hadFrameMarkers = false;
+  let frameSequence = 0;
+  let warnedMissingCameraHook = false;
 
   const discover = () => {
     try {
       readDiscovery();
       discoveryError = null;
     } catch (error) {
+      cameraHook?.dispose();
+      cameraHook = null;
+      hookedView = null;
+      displacedView = null;
       observer?.dispose();
       observer = null;
       strategy?.dispose();
@@ -186,6 +231,12 @@ export function startBridge(): () => void {
       : null;
     const found = foundMenu?.game ?? null;
     if (found !== game || playing !== inGame) {
+      cameraHook?.dispose();
+      cameraHook = null;
+      hookedView = null;
+      displacedView = null;
+      hadFrameMarkers = false;
+      warnedMissingCameraHook = false;
       // Advice is on by default for every game; a toggle made while the game
       // is still loading is kept until the game instance appears.
       if (!playing || playing !== inGame || game !== null) {
@@ -289,7 +340,7 @@ export function startBridge(): () => void {
     strategy?.poll(observer.strategyIndex());
   };
 
-  const publishBuildMarkers = (force = false) => {
+  const publishBuildMarkers = (force = false, frame = false) => {
     const buildMarkers: (ProjectedMarker & { type: UnitType })[] = [];
     try {
       if (requestedEnabled && game && advisor.enabled && !game.isCatchingUp()) {
@@ -337,13 +388,20 @@ export function startBridge(): () => void {
       }
       buildMarkers.length = 0;
     }
+    if (frame) return buildMarkers;
     const signature = JSON.stringify(buildMarkers);
-    if (!force && signature === lastBuildSignature) return;
+    if (!force && signature === lastBuildSignature) return buildMarkers;
     lastBuildSignature = signature;
     window.postMessage(
-      { type: "OPENFRONT_OVERLAY_BUILDS", buildMarkers, controlId },
+      {
+        type: "OPENFRONT_OVERLAY_BUILDS",
+        buildMarkers,
+        controlId,
+        frameSequence,
+      },
       window.location.origin,
     );
+    return buildMarkers;
   };
 
   const collectBetrayals = (args: unknown[]) => {
@@ -819,7 +877,11 @@ export function startBridge(): () => void {
     if (!force && signature === lastPirateSignature) return;
     lastPirateSignature = signature;
     window.postMessage(
-      { type: "OPENFRONT_OVERLAY_PIRATE_WARSHIPS", pirateWarships },
+      {
+        type: "OPENFRONT_OVERLAY_PIRATE_WARSHIPS",
+        pirateWarships,
+        frameSequence,
+      },
       window.location.origin,
     );
   };
@@ -1035,7 +1097,11 @@ export function startBridge(): () => void {
     if (!force && signature === lastAbandonedSignature) return;
     lastAbandonedSignature = signature;
     window.postMessage(
-      { type: "OPENFRONT_OVERLAY_ABANDONED_TERRITORIES", abandonedPlayers },
+      {
+        type: "OPENFRONT_OVERLAY_ABANDONED_TERRITORIES",
+        abandonedPlayers,
+        frameSequence,
+      },
       window.location.origin,
     );
   };
@@ -1047,7 +1113,7 @@ export function startBridge(): () => void {
     if (!force && signature === lastSiloSignature) return;
     lastSiloSignature = signature;
     window.postMessage(
-      { type: "OPENFRONT_OVERLAY_SILOS", ...markers },
+      { type: "OPENFRONT_OVERLAY_SILOS", ...markers, frameSequence },
       window.location.origin,
     );
   };
@@ -1109,7 +1175,7 @@ export function startBridge(): () => void {
     }
   };
 
-  const publishTeamAttackMarkers = () => {
+  const publishTeamAttackMarkers = (frame = false) => {
     if (stopped) return;
     const markers: TeamAttackMarker[] = [];
     try {
@@ -1173,6 +1239,7 @@ export function startBridge(): () => void {
         lastTeamProjectionError = message;
       }
     }
+    if (frame) return markers;
     const signature = JSON.stringify(markers);
     if (signature === lastTeamAttackSignature) return markers;
     lastTeamAttackSignature = signature;
@@ -1181,6 +1248,7 @@ export function startBridge(): () => void {
         type: "OPENFRONT_OVERLAY_TEAM_ATTACKS",
         teamAttackMarkers: markers,
         controlId,
+        frameSequence,
       },
       window.location.origin,
     );
@@ -1233,6 +1301,7 @@ export function startBridge(): () => void {
             ? (strategy?.snapshot ?? null)
             : null,
         controlId,
+        frameSequence,
         ...siloMarkers,
         teamAttackMarkers,
         playerLists: {
@@ -1266,6 +1335,7 @@ export function startBridge(): () => void {
           requestedEnabled,
         );
       }
+      syncCameraHook();
       publish();
       return;
     }
@@ -1276,6 +1346,7 @@ export function startBridge(): () => void {
     warnedThreats.clear();
     advisor = emptyAdvisor();
     enableObserver();
+    syncCameraHook();
     publish();
   };
   const scheduleSiloFrame = () => {
@@ -1283,6 +1354,7 @@ export function startBridge(): () => void {
       stopped ||
       !inGame ||
       !game ||
+      hookedView !== null ||
       !(
         hasEnemySilos ||
         hasAllySilos ||
@@ -1305,9 +1377,101 @@ export function startBridge(): () => void {
       scheduleSiloFrame();
     });
   };
+  const syncCameraHook = () => {
+    const view = window.__webglView;
+    if (!inGame || !game || !requestedEnabled) {
+      cameraHook?.dispose();
+      cameraHook = null;
+      hookedView = null;
+      return;
+    }
+    if (hookedView === view && cameraHook) {
+      if (cameraHook.isCurrent()) return;
+      cameraHook.dispose();
+      cameraHook = null;
+      hookedView = null;
+      displacedView = view ?? null;
+      console.warn(
+        "[OpenFront Overlay] Map render hook was replaced; using animation-frame marker tracking.",
+      );
+      warnedMissingCameraHook = true;
+      return;
+    }
+    if (view && view === displacedView) return;
+    cameraHook?.dispose();
+    cameraHook = null;
+    hookedView = null;
+    if (!view || typeof view.setCameraState !== "function") {
+      if (!warnedMissingCameraHook) {
+        console.warn(
+          "[OpenFront Overlay] Map render hook unavailable; using animation-frame marker tracking.",
+        );
+        warnedMissingCameraHook = true;
+      }
+      return;
+    }
+    warnedMissingCameraHook = false;
+    try {
+      cameraHook = installCameraHook(view, () => {
+        if (
+          stopped ||
+          !requestedEnabled ||
+          !document.body?.classList.contains("in-game") ||
+          window.__webglView !== view
+        )
+          return;
+        if (
+          !hadFrameMarkers &&
+          !hasEnemySilos &&
+          !hasAllySilos &&
+          !hasPirates &&
+          !hasAbandoned &&
+          teamAttacks.length === 0 &&
+          !strategy?.snapshot.builds.some((b) => b.tile !== null)
+        )
+          return;
+        const target = document.getElementById("openfront-advisor-ui");
+        if (!target) return;
+        const frame = {
+          controlId,
+          frameSequence: ++frameSequence,
+          ...readSilos(),
+          pirateWarships: readPirateMarkers(),
+          abandonedPlayers: readAbandonedMarkers(),
+          buildMarkers: publishBuildMarkers(false, true),
+          teamAttackMarkers: publishTeamAttackMarkers(true),
+        };
+        hadFrameMarkers =
+          frame.missileSilos.length > 0 ||
+          frame.allySilos.length > 0 ||
+          frame.pirateWarships.length > 0 ||
+          frame.abandonedPlayers.length > 0 ||
+          (frame.buildMarkers?.length ?? 0) > 0 ||
+          (frame.teamAttackMarkers?.length ?? 0) > 0;
+        target.setAttribute(
+          "data-openfront-marker-frame",
+          JSON.stringify(frame),
+        );
+        target.dispatchEvent(new Event("openfront-overlay-marker-frame"));
+      });
+    } catch (error) {
+      displacedView = view;
+      console.error(
+        "[OpenFront Overlay] Cannot install map render hook; using animation-frame marker tracking:",
+        error,
+      );
+      return;
+    }
+    hookedView = view;
+    if (siloFrame !== null) {
+      window.cancelAnimationFrame(siloFrame);
+      siloFrame = null;
+    }
+  };
   const poll = () => {
     discover();
     enableObserver();
+    syncCameraHook();
     observer?.poll();
     scanTeamAttacks();
     updateStrategy();
@@ -1322,6 +1486,7 @@ export function startBridge(): () => void {
   };
   const stop = () => {
     stopped = true;
+    cameraHook?.dispose();
     observer?.dispose();
     strategy?.dispose();
     window.clearInterval(timer);

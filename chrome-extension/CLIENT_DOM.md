@@ -38,12 +38,18 @@ Lit-style rerenders, color restoration, and game exit.
 ## Map markers
 
 For markers positioned over the map, read game units and camera-projected
-coordinates in the MAIN-world bridge, then send only validated display data to
-the isolated content script. Render extension-owned markers in a fixed,
-viewport-sized layer with `pointer-events: none`; refresh their positions as
-the camera moves (ideally once per animation frame while markers are visible)
-and remove stale markers when the bridge reports none. Skip unchanged positions
-and avoid republishing unrelated HUD state at the marker rate. Use lightweight
+coordinates in the MAIN-world bridge. The bridge wraps the current map
+renderer instance's camera update and synchronously dispatches a DOM event
+with a JSON frame in the advisor host's attribute, immediately before the
+game's WebGL draw. The isolated UI validates that frame before rendering.
+Same-origin page code can spoof the frame, just like ordinary bridge messages.
+If the private render hook is missing or replaced, use the existing
+animation-frame and message path instead. Restore only the extension's own
+hook on disable, replacement, or exit.
+
+Render extension-owned markers in a fixed, viewport-sized layer with
+`pointer-events: none` and remove stale markers as state changes. Avoid
+republishing unrelated HUD state at the marker rate. Use lightweight
 CSS triangles for silo markers and circles for other marker types. For
 off-screen targets, intersect the center-to-target ray with an inset viewport
 rectangle and show a directional marker there. Do not rely on DOM positioning

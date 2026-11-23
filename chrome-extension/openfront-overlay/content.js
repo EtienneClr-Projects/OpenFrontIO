@@ -23,6 +23,7 @@
   let showTeamAttacks = true;
   let teamAttackLayer = null;
   const teamAttackElements = new Map();
+  let lastFrameSequence = 0;
   // Each kind of map marker gets its own fixed, click-through layer.
   const markerKinds = {
     silo: {
@@ -454,6 +455,9 @@
         item.incoming.style.color = "#ffad4d";
         teamAttackElements.set(marker.id, item);
       }
+      const signature = JSON.stringify(marker);
+      if (item.markerSignature === signature) continue;
+      item.markerSignature = signature;
       item.style.left = `${marker.x}px`;
       item.style.top = `${marker.y}px`;
       item.outgoing.hidden = marker.outgoing === 0;
@@ -655,6 +659,13 @@
         }
         config.elements.set(marker.id, ring);
       }
+      const signature = JSON.stringify([
+        marker,
+        window.innerWidth,
+        window.innerHeight,
+      ]);
+      if (ring.markerSignature === signature) continue;
+      ring.markerSignature = signature;
       if (kind === "build")
         ring.label.textContent = advisorLabels[buildLabels[marker.type]];
       const position = projectSiloMarker(marker);
@@ -888,6 +899,56 @@
   function mountAdvisor() {
     const host = node("div");
     host.id = overlayId;
+    host.addEventListener("openfront-overlay-marker-frame", () => {
+      if (!enabled || !document.body?.classList.contains("in-game")) return;
+      const raw = host.getAttribute("data-openfront-marker-frame");
+      if (typeof raw !== "string" || raw.length > 2000000) {
+        console.error("[OpenFront Overlay] Invalid marker frame.");
+        return;
+      }
+      let frame;
+      try {
+        frame = JSON.parse(raw);
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+        console.error("[OpenFront Overlay] Invalid marker frame JSON.", error);
+        return;
+      }
+      if (
+        !frame ||
+        !Number.isSafeInteger(frame.controlId) ||
+        frame.controlId < 0 ||
+        !Number.isSafeInteger(frame.frameSequence) ||
+        frame.frameSequence < 0 ||
+        !validMarkers(frame.missileSilos) ||
+        !validMarkers(frame.allySilos) ||
+        !validMarkers(frame.pirateWarships) ||
+        !validMarkers(
+          frame.abandonedPlayers,
+          markerKinds.abandoned.maxRadius,
+        ) ||
+        !validMarkers(frame.buildMarkers) ||
+        frame.buildMarkers.length > 3 ||
+        !frame.buildMarkers.every((m) => Object.hasOwn(buildLabels, m.type)) ||
+        !validTeamAttackMarkers(frame.teamAttackMarkers)
+      ) {
+        console.error("[OpenFront Overlay] Invalid marker frame.");
+        return;
+      }
+      if (
+        frame.controlId < requestId ||
+        frame.frameSequence < lastFrameSequence ||
+        pendingRequest !== null
+      )
+        return;
+      lastFrameSequence = frame.frameSequence;
+      syncMarkers("silo", frame.missileSilos);
+      syncMarkers("allySilo", frame.allySilos);
+      syncMarkers("pirate", frame.pirateWarships);
+      syncMarkers("abandoned", frame.abandonedPlayers);
+      syncMarkers("build", frame.buildMarkers);
+      syncTeamAttacks(frame.teamAttackMarkers);
+    });
     const root = host.attachShadow({ mode: "open" });
     node(
       "style",
@@ -1172,6 +1233,17 @@
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== window.location.origin)
       return;
+    if (
+      event.data?.frameSequence !== undefined &&
+      (!Number.isSafeInteger(event.data.frameSequence) ||
+        event.data.frameSequence < 0)
+    ) {
+      console.error("[OpenFront Overlay] Invalid marker frame sequence.");
+      return;
+    }
+    const staleMarkers =
+      event.data?.frameSequence !== undefined &&
+      event.data.frameSequence < lastFrameSequence;
     if (event.data?.type === "OPENFRONT_OVERLAY_TEAM_ATTACKS") {
       if (
         !validTeamAttackMarkers(event.data.teamAttackMarkers) ||
@@ -1181,7 +1253,7 @@
         console.error("[OpenFront Overlay] Invalid team attack markers.");
         return;
       }
-      if (event.data.controlId < requestId) return;
+      if (event.data.controlId < requestId || staleMarkers) return;
       syncTeamAttacks(
         enabled && document.body?.classList.contains("in-game")
           ? event.data.teamAttackMarkers
@@ -1201,7 +1273,7 @@
         console.error("[OpenFront Overlay] Invalid build placement message.");
         return;
       }
-      if (event.data.controlId < requestId) return;
+      if (event.data.controlId < requestId || staleMarkers) return;
       syncMarkers(
         "build",
         enabled && document.body?.classList.contains("in-game") ? markers : [],
@@ -1260,6 +1332,7 @@
         );
         return;
       }
+      if (staleMarkers) return;
       syncMarkers(
         "abandoned",
         document.body?.classList.contains("in-game")
@@ -1275,6 +1348,7 @@
         console.error("[OpenFront Overlay] Invalid silo marker message.");
         return;
       }
+      if (staleMarkers) return;
       const inGame = document.body?.classList.contains("in-game");
       syncMarkers("silo", inGame ? missileSilos : []);
       syncMarkers("allySilo", inGame ? allySilos : []);
@@ -1285,6 +1359,7 @@
         console.error("[OpenFront Overlay] Invalid pirate warship message.");
         return;
       }
+      if (staleMarkers) return;
       syncMarkers(
         "pirate",
         document.body?.classList.contains("in-game")
@@ -1353,8 +1428,10 @@
       return;
     }
     state = { status, troops };
-    syncMarkers("silo", status === "idle" ? [] : missileSilos);
-    syncMarkers("allySilo", status === "idle" ? [] : allySilos);
+    if (!staleMarkers || status !== "playing" || !event.data.advisor?.enabled) {
+      syncMarkers("silo", status === "idle" ? [] : missileSilos);
+      syncMarkers("allySilo", status === "idle" ? [] : allySilos);
+    }
     advisor = event.data.advisor ?? defaultAdvisor;
     playerLists = lists ?? emptyPlayerLists;
     pendingRequest = null;
@@ -1369,13 +1446,14 @@
     )
       syncMarkers("build", []);
     if (!enabled || status !== "playing") clearStrategyDecorations();
-    syncTeamAttacks(
-      enabled &&
-        status === "playing" &&
-        document.body?.classList.contains("in-game")
-        ? (event.data.teamAttackMarkers ?? [])
-        : [],
-    );
+    if (!staleMarkers || !enabled || status !== "playing")
+      syncTeamAttacks(
+        enabled &&
+          status === "playing" &&
+          document.body?.classList.contains("in-game")
+          ? (event.data.teamAttackMarkers ?? [])
+          : [],
+      );
     if (status === "idle") {
       enabled = false;
       advisor = defaultAdvisor;

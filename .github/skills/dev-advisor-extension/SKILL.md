@@ -200,10 +200,18 @@ warnings use `2147483647`. These are not browser top-layer elements.
   activation; minimizing clears marker production as well. Do not infer
   independent background monitoring from a checkbox being checked.
 
-Discovery and new-unit checks run every 500 ms. While silo, pirate or team attack markers
-exist, animation frames resample projected positions and post only changed
-arrays; full advisor snapshots do not run at frame rate. Detection latency and
-camera-follow latency are different paths.
+Discovery and new-unit checks run every 500 ms. The checked-in WebGL client
+exposes its `MapRenderer` as `window.__webglView`, and `ClientGameRunner` calls
+its `setCameraState()` immediately before drawing. The extension wraps that
+instance method and synchronously dispatches validated marker frames through a
+DOM attribute and event on the advisor host; ordinary `postMessage` delivery is
+asynchronous and cannot guarantee same-frame positioning. A frame sequence
+prevents older messages from overwriting newer positions. Full advisor
+snapshots still run at the poll cadence. If the private hook is unavailable or
+replaced, a diagnostic is logged and animation-frame/message tracking resumes.
+Preserve the original method's behavior and restore only the extension's own
+hook on disable, game replacement or teardown. Check the deployed client when
+changing this private integration.
 
 ## Modification recipes
 
