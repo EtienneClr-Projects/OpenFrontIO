@@ -37,6 +37,18 @@
       layer: null,
       elements: new Map(),
     },
+    allySilo: {
+      layerId: "openfront-ally-silos",
+      datasetKey: "openfrontAllySilo",
+      arrowKey: "openfrontAllySiloArrow",
+      animation: "openfront-ally-silo-pulse",
+      color: "#3b82f6",
+      glow: "#2563eb",
+      circle: false,
+      isEnabled: () => findEnemySilos,
+      layer: null,
+      elements: new Map(),
+    },
     pirate: {
       layerId: "openfront-pirate-warships",
       datasetKey: "openfrontPirateWarship",
@@ -139,6 +151,7 @@
     "advisorTitle",
     "collapseAdvisor",
     "expandAdvisor",
+    "extensionActive",
     "findEnemySilos",
     "monitorPirates",
     "watchRichPlayers",
@@ -159,12 +172,9 @@
     "advisor_unsupported",
     "advisor_error",
     "strongNeighbors",
-    "noStrongNeighbors",
     "teammatesNeedTroops",
     "richPlayers",
-    "noRichPlayers",
     "traitorNeighbors",
-    "noTraitorNeighbors",
     "playerListUnavailable",
     "friendlyNeighbor",
     "hostileNeighbor",
@@ -667,13 +677,21 @@
     if (!panel) return;
     const minimized = !enabled && advisor.status !== "finished";
     panel.host.dataset.minimized = String(minimized);
+    const idle = state.status === "idle";
     panel.collapse.textContent =
-      advisorLabels[minimized ? "expandAdvisor" : "collapseAdvisor"];
+      advisorLabels[
+        idle
+          ? "extensionActive"
+          : minimized
+            ? "expandAdvisor"
+            : "collapseAdvisor"
+      ];
+    panel.collapse.dataset.idle = String(idle);
     panel.collapse.disabled =
-      state.status === "idle" ||
-      ["finished", "unsupported", "error"].includes(advisor.status);
+      idle || ["finished", "unsupported", "error"].includes(advisor.status);
     panel.collapse.setAttribute("aria-expanded", String(!minimized));
     panel.collapse.setAttribute("aria-pressed", String(enabled));
+    panel.settings.hidden = idle;
     panel.siloVisibilityLabel.hidden = minimized;
     panel.pirateMonitorLabel.hidden = minimized;
     panel.richWatchLabel.hidden = minimized;
@@ -715,40 +733,31 @@
       for (const teammate of advisor.teammatesNeedingTroops)
         node("li", teammate.name, teammates);
     }
-    node("h3", advisorLabels.strongNeighbors, panel.details);
-    if (advisor.neighbors.length === 0) {
-      node("p", advisorLabels.noStrongNeighbors, panel.details);
-    }
-    const list = node("ul", undefined, panel.details);
-    const neighbors = [...advisor.neighbors].sort(
-      (a, b) => Number(a.friendly) - Number(b.friendly),
-    );
-    for (const neighbor of neighbors) {
-      const relation =
-        advisorLabels[
-          neighbor.friendly ? "friendlyNeighbor" : "hostileNeighbor"
-        ];
-      const item = node(
-        "li",
-        `${neighbor.name} - ${relation}: ${troops(neighbor.troops)}`,
-        list,
+    if (advisor.neighbors.length) {
+      node("h3", advisorLabels.strongNeighbors, panel.details);
+      const list = node("ul", undefined, panel.details);
+      const neighbors = [...advisor.neighbors].sort(
+        (a, b) => Number(a.friendly) - Number(b.friendly),
       );
-      item.className = neighbor.friendly ? "friendly" : "hostile";
-    }
-    for (const [key, emptyLabel] of [
-      ["richPlayers", "noRichPlayers"],
-      ["traitorNeighbors", "noTraitorNeighbors"],
-    ]) {
-      node("h3", advisorLabels[key], panel.details);
-      const players = playerLists[key];
-      if (players === null || players.length === 0) {
-        node(
-          "p",
+      for (const neighbor of neighbors) {
+        const relation =
           advisorLabels[
-            players === null ? "playerListUnavailable" : emptyLabel
-          ],
-          panel.details,
+            neighbor.friendly ? "friendlyNeighbor" : "hostileNeighbor"
+          ];
+        const item = node(
+          "li",
+          `${neighbor.name} - ${relation}: ${troops(neighbor.troops)}`,
+          list,
         );
+        item.className = neighbor.friendly ? "friendly" : "hostile";
+      }
+    }
+    for (const key of ["richPlayers", "traitorNeighbors"]) {
+      const players = playerLists[key];
+      if (players !== null && players.length === 0) continue;
+      node("h3", advisorLabels[key], panel.details);
+      if (players === null) {
+        node("p", advisorLabels.playerListUnavailable, panel.details);
       } else {
         const playersList = node("ul", undefined, panel.details);
         for (const player of players) node("li", player.name, playersList);
@@ -892,7 +901,9 @@
       .settings { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
       button { background: #30445e; color: white; border: 1px solid #7085a0; border-radius: 4px; padding: 4px 7px; cursor: pointer; font: inherit; }
       button:disabled { cursor: default; opacity: 0.6; }
+      button[data-idle="true"] { color: #86efac; opacity: 1; }
       header > button { grid-column: 2; justify-self: end; flex-shrink: 0; }
+      header > button[data-idle="true"] { grid-column: 1 / -1; justify-self: center; }
       h3 { margin: 12px 0 4px; font-size: 14px; }
       p { margin: 6px 0; }
       ul { margin: 6px 0; padding-left: 20px; }
@@ -926,6 +937,9 @@
       findEnemySilos = siloVisibility.checked;
       const layer = markerKinds.silo.layer;
       if (layer) layer.style.display = findEnemySilos ? "block" : "none";
+      const allySiloLayer = markerKinds.allySilo.layer;
+      if (allySiloLayer)
+        allySiloLayer.style.display = findEnemySilos ? "block" : "none";
     });
     const pirateMonitorLabel = node("label", undefined, settings);
     pirateMonitorLabel.className = "silo-visibility";
@@ -989,6 +1003,7 @@
       body,
       collapse,
       status,
+      settings,
       siloVisibilityLabel,
       pirateMonitorLabel,
       richWatchLabel,
@@ -1254,16 +1269,15 @@
       return;
     }
     if (event.data?.type === "OPENFRONT_OVERLAY_SILOS") {
-      if (!validMarkers(event.data.missileSilos)) {
-        console.error("[OpenFront Overlay] Invalid enemy silo message.");
+      const missileSilos = event.data.missileSilos ?? [];
+      const allySilos = event.data.allySilos ?? [];
+      if (!validMarkers(missileSilos) || !validMarkers(allySilos)) {
+        console.error("[OpenFront Overlay] Invalid silo marker message.");
         return;
       }
-      syncMarkers(
-        "silo",
-        document.body?.classList.contains("in-game")
-          ? event.data.missileSilos
-          : [],
-      );
+      const inGame = document.body?.classList.contains("in-game");
+      syncMarkers("silo", inGame ? missileSilos : []);
+      syncMarkers("allySilo", inGame ? allySilos : []);
       return;
     }
     if (event.data?.type === "OPENFRONT_OVERLAY_PIRATE_WARSHIPS") {
@@ -1313,8 +1327,9 @@
       return;
     }
     const missileSilos = event.data.missileSilos ?? [];
-    if (!validMarkers(missileSilos)) {
-      console.error("[OpenFront Overlay] Invalid enemy silo message.");
+    const allySilos = event.data.allySilos ?? [];
+    if (!validMarkers(missileSilos) || !validMarkers(allySilos)) {
+      console.error("[OpenFront Overlay] Invalid silo marker message.");
       return;
     }
     if (
@@ -1339,6 +1354,7 @@
     }
     state = { status, troops };
     syncMarkers("silo", status === "idle" ? [] : missileSilos);
+    syncMarkers("allySilo", status === "idle" ? [] : allySilos);
     advisor = event.data.advisor ?? defaultAdvisor;
     playerLists = lists ?? emptyPlayerLists;
     pendingRequest = null;
@@ -1383,6 +1399,7 @@
 
     mountAdvisor();
     createMarkerLayer("silo");
+    createMarkerLayer("allySilo");
     createMarkerLayer("pirate");
     createMarkerLayer("abandoned");
     createMarkerLayer("build");

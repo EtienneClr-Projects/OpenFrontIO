@@ -24,6 +24,12 @@ Before editing:
 3. Check current source before relying on documentation or remembered behavior.
    The deployed client's private APIs may differ from this checkout.
 
+For every extension change, increment the version in the packaged
+`manifest.json` (use a patch increment unless a different version is requested)
+and update the version stated in the extension README to match. Do this once per
+coherent change, not for each individual edit. Skill-only changes do not require
+an extension version bump.
+
 ## File map and information sources
 
 Paths in commands below are relative to the repository root.

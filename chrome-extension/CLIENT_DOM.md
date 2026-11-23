@@ -39,14 +39,15 @@ Lit-style rerenders, color restoration, and game exit.
 
 For markers positioned over the map, read game units and camera-projected
 coordinates in the MAIN-world bridge, then send only validated display data to
-the isolated content script. Render extension-owned circles in a fixed,
+the isolated content script. Render extension-owned markers in a fixed,
 viewport-sized layer with `pointer-events: none`; refresh their positions as
 the camera moves (ideally once per animation frame while markers are visible)
 and remove stale markers when the bridge reports none. Skip unchanged positions
-and avoid republishing unrelated HUD state at the marker rate. For off-screen
-targets, intersect the center-to-target ray with an inset viewport rectangle
-and show a directional marker there. Use a lightweight CSS triangle for the
-marker. Do not rely on DOM positioning to infer the game's camera transform.
+and avoid republishing unrelated HUD state at the marker rate. Use lightweight
+CSS triangles for silo markers and circles for other marker types. For
+off-screen targets, intersect the center-to-target ray with an inset viewport
+rectangle and show a directional marker there. Do not rely on DOM positioning
+to infer the game's camera transform.
 
 ## Build and reload
 

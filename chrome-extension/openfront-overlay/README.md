@@ -1,10 +1,12 @@
 # OpenFront Overlay
 
-A standalone Chrome extension (Manifest V3). Version 0.3.0
+A standalone Chrome extension (Manifest V3). Version 0.3.3
 shows the advisor control at the bottom left. Each game starts with
 advice on, refreshed every 500 ms. Click the top-right **Disable** button to collapse
 the panel and stop observation, and **Activate** to turn it back on. Troop counts appear in the advisor's metrics.
 It runs on the normal remote OpenFront.io client, not a locally compiled game.
+Outside a game, the compact green **Active** indicator shows that the extension
+is loaded; game analysis starts when a game begins.
 
 ## Advisor milestone
 
@@ -41,8 +43,8 @@ markers are excluded in both team and free-for-all games. Markers disappear
 when the advisor is disabled, the game ends, or analysis is catching up. The
 checkbox hides them without changing game state.
 
-Empty player lists display `-` below their titles; unavailable lists retain
-their diagnostic message.
+Empty player lists are hidden; unavailable lists retain their diagnostic
+message.
 
 After a PUSH recommendation, the green bar remains while the map index briefly
 catches up and refreshes when analysis resumes. It resets when leaving the game
@@ -141,20 +143,21 @@ fill class, an internal implementation detail rather than a stable extension
 API; a client markup change may disable the indicator until the extension is
 updated.
 
-## Enemy missile silos
+## Enemy and allied missile silos
 
 While in a game, active missile silos owned by living players who are not the
-local player or a friendly are marked with orange triangles when **Find enemy
-silos** is checked (the default). Unchecking it hides the triangles and
-disables the first-silo warning. The markers match the silo icon's pointed
-silhouette, follow the map camera and zoom, and do not intercept clicks or send
-gameplay actions. Disabling the advisor also clears the markers.
-While an enemy silo is present, its screen position is checked each animation
-frame; unchanged markers are not resent. When a silo is outside the viewport,
-its triangle moves to the nearest point on the viewport edge along the ray from
-the screen center, with a chevron pointing toward the silo. The marker layer
-stays above game overlays and does not intercept pointer input; a light and
-dark outline keeps the triangle visible against varied terrain.
+local player or friendly are marked with orange triangles; silos owned by
+living friendly players are marked with blue triangles. **Find enemy silos**
+(checked by default) controls visibility of both marker types and the
+first-enemy-silo warning. The markers match the silo icon's pointed silhouette,
+follow the map camera and zoom, and do not intercept clicks or send gameplay
+actions. Disabling the advisor also clears the markers. While any silo marker
+is present, its screen position is checked each animation frame; unchanged
+markers are not resent. When a silo is outside the viewport, its triangle moves
+to the nearest point on the viewport edge along the ray from the screen center,
+with a chevron pointing toward the silo. The marker layers stay above game
+overlays and do not intercept pointer input; a light and dark outline keeps the
+triangles visible against varied terrain.
 
 The first time a living enemy silo is detected in a game, a centered warning
 appears for about two seconds and then fades away.

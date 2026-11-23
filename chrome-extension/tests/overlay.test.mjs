@@ -492,20 +492,13 @@ await test("live player lists follow stronger neighbors and refresh without advi
     items().some((item) => item.textContent === "Traitor"),
     false,
   );
-  assert.ok(
-    descendants(elements[0]).some(
-      (element) => element.textContent === messages.noTraitorNeighbors.message,
-    ),
-  );
+  assert.equal(headings().includes(messages.traitorNeighbors.message), false);
   send({
     ...snapshot,
     playerLists: { richPlayers: [], traitorNeighbors: null },
   });
-  assert.ok(
-    descendants(elements[0]).some(
-      (element) => element.textContent === messages.noRichPlayers.message,
-    ),
-  );
+  assert.equal(headings().includes(messages.richPlayers.message), false);
+  assert.ok(headings().includes(messages.traitorNeighbors.message));
   assert.ok(
     descendants(elements[0]).some(
       (element) =>
@@ -564,30 +557,41 @@ await test("team support alert updates, validates payloads, and clears with guid
   assert.equal(alert(), undefined);
 });
 
-await test("empty overlay lists display a simple dash below each title", () => {
+await test("empty player lists are hidden and reappear when populated", () => {
   const { context, elements, send } = createContext();
   runInNewContext(source, context);
-  send({
+  const snapshot = {
     status: "playing",
     troops: 42000,
     advisor: activeAdvisor({ neighbors: [] }),
     playerLists: { richPlayers: [], traitorNeighbors: [] },
+  };
+  const headings = () =>
+    descendants(elements[0])
+      .filter((element) => element.tag === "h3")
+      .map((element) => element.textContent);
+  const listHeadings = [
+    messages.strongNeighbors.message,
+    messages.richPlayers.message,
+    messages.traitorNeighbors.message,
+  ];
+  send(snapshot);
+  assert.ok(listHeadings.every((heading) => !headings().includes(heading)));
+  assert.equal(
+    descendants(elements[0]).some((element) => element.tag === "ul"),
+    false,
+  );
+  send({
+    ...snapshot,
+    advisor: activeAdvisor(),
+    playerLists: {
+      richPlayers: [{ id: 2, name: "Rich" }],
+      traitorNeighbors: [{ id: 3, name: "Traitor" }],
+    },
   });
-  const headings = descendants(elements[0]).filter(
-    (element) => element.tag === "h3",
-  );
-  assert.deepEqual(
-    headings.slice(-3).map((heading) => {
-      const siblings = heading.parentElement.children;
-      const placeholder = siblings[siblings.indexOf(heading) + 1];
-      return [heading.textContent, placeholder.tag, placeholder.textContent];
-    }),
-    [
-      [messages.strongNeighbors.message, "p", "-"],
-      [messages.richPlayers.message, "p", "-"],
-      [messages.traitorNeighbors.message, "p", "-"],
-    ],
-  );
+  assert.ok(listHeadings.every((heading) => headings().includes(heading)));
+  send(snapshot);
+  assert.ok(listHeadings.every((heading) => !headings().includes(heading)));
 });
 
 await test("malformed and foreign player lists cannot replace displayed lists", () => {
@@ -670,7 +674,7 @@ for (const readyState of ["loading", "interactive", "complete"]) {
       context.document.readyState = "interactive";
       listeners[0].callback();
     }
-    assert.equal(elements.length, 6);
+    assert.equal(elements.length, 7);
     assert.equal(elements[0].id, "openfront-advisor-ui");
     assert.equal(elements[0].dataset.minimized, "true");
     assert.equal(elements[1].id, "openfront-enemy-silos");
@@ -685,11 +689,11 @@ for (const readyState of ["loading", "interactive", "complete"]) {
     assert.match(style.textContent, /bottom: calc\(16px/);
     assert.doesNotMatch(style.textContent, /right: calc/);
     runInNewContext(source, context);
-    assert.equal(elements.length, 6);
+    assert.equal(elements.length, 7);
   });
 }
 
-await test("enemy silo markers track screen coordinates and disappear when cleared", () => {
+await test("enemy and allied silo triangles track coordinates and disappear when cleared", () => {
   const { context, elements, send } = createContext();
   context.document.body.classList.add("in-game");
   runInNewContext(source, context);
@@ -698,14 +702,24 @@ await test("enemy silo markers track screen coordinates and disappear when clear
     troops: 100,
     advisor: activeAdvisor(),
   });
-  const siloMessage = (missileSilos) =>
-    send({}, { data: { type: "OPENFRONT_OVERLAY_SILOS", missileSilos } });
-  siloMessage([{ id: 12, x: 120, y: 80, radius: 18 }]);
+  const siloMessage = (missileSilos, allySilos = []) =>
+    send(
+      {},
+      { data: { type: "OPENFRONT_OVERLAY_SILOS", missileSilos, allySilos } },
+    );
+  siloMessage(
+    [{ id: 12, x: 120, y: 80, radius: 18 }],
+    [{ id: 13, x: 140, y: 90, radius: 18 }],
+  );
 
   const layer = elements.find(
     (element) => element.id === "openfront-enemy-silos",
   );
+  const allyLayer = elements.find(
+    (element) => element.id === "openfront-ally-silos",
+  );
   assert.ok(layer);
+  assert.ok(allyLayer);
   assert.equal(layer.style.position, "fixed");
   assert.equal(layer.style.zIndex, "2147483646");
   assert.equal(layer.style.pointerEvents, "none");
@@ -723,6 +737,7 @@ await test("enemy silo markers track screen coordinates and disappear when clear
   findCheckbox.checked = false;
   findCheckbox.listeners.change();
   assert.equal(layer.style.display, "none");
+  assert.equal(allyLayer.style.display, "none");
   const pulseStyles = descendants(layer).find(
     (element) => element.tag === "style",
   );
@@ -741,13 +756,22 @@ await test("enemy silo markers track screen coordinates and disappear when clear
   assert.match(ring.style.filter, /drop-shadow\(0 0 1px #fff\)/);
   assert.match(ring.style.filter, /drop-shadow\(0 0 3px #111\)/);
   assert.match(ring.style.animation, /900ms ease-in-out infinite alternate/);
+  const allyRing = descendants(allyLayer).find(
+    (element) => element.dataset.openfrontAllySilo === "13",
+  );
+  assert.ok(allyRing);
+  assert.equal(allyRing.style.backgroundColor, "#3b82f6");
+  assert.equal(allyRing.style.clipPath, "polygon(50% 0, 100% 100%, 0 100%)");
+  assert.match(allyRing.style.animation, /openfront-ally-silo-pulse/);
 
   findCheckbox.checked = true;
   findCheckbox.listeners.change();
   assert.equal(layer.style.display, "block");
+  assert.equal(allyLayer.style.display, "block");
   findCheckbox.checked = false;
   findCheckbox.listeners.change();
   assert.equal(layer.style.display, "none");
+  assert.equal(allyLayer.style.display, "none");
 
   assert.equal(ring.dataset.offscreen, "false");
   const arrow = descendants(ring).find(
@@ -756,23 +780,37 @@ await test("enemy silo markers track screen coordinates and disappear when clear
   assert.ok(arrow);
   assert.equal(arrow.style.display, "none");
 
-  siloMessage([{ id: 12, x: 900, y: 300, radius: 18 }]);
+  siloMessage(
+    [{ id: 12, x: 900, y: 300, radius: 18 }],
+    [{ id: 13, x: 900, y: 300, radius: 18 }],
+  );
   assert.equal(ring.style.left, "778px");
   assert.equal(ring.style.top, "300px");
   assert.equal(ring.dataset.offscreen, "true");
   assert.equal(arrow.style.display, "block");
   assert.match(arrow.style.transform, /rotate\(0rad\)/);
+  assert.equal(allyRing.style.left, "778px");
+  assert.equal(allyRing.dataset.offscreen, "true");
 
-  siloMessage([{ id: 12, x: 120, y: 80, radius: 18 }]);
+  siloMessage(
+    [{ id: 12, x: 120, y: 80, radius: 18 }],
+    [{ id: 13, x: 120, y: 80, radius: 18 }],
+  );
   assert.equal(ring.style.left, "120px");
   assert.equal(ring.style.top, "80px");
   assert.equal(ring.dataset.offscreen, "false");
   assert.equal(arrow.style.display, "none");
 
-  siloMessage([]);
+  siloMessage([], []);
   assert.equal(
     descendants(layer).some(
       (element) => element.dataset.openfrontEnemySilo === "12",
+    ),
+    false,
+  );
+  assert.equal(
+    descendants(allyLayer).some(
+      (element) => element.dataset.openfrontAllySilo === "13",
     ),
     false,
   );
@@ -1311,6 +1349,17 @@ await test("per-game opt-in, safe names and returning home reset the panel", () 
   const { context, elements, send, controls } = createContext();
   runInNewContext(source, context);
   const host = elements[0];
+  const button = descendants(host).find((element) => element.tag === "button");
+  assert.equal(button.textContent, "Active");
+  assert.equal(button.disabled, true);
+  assert.equal(button.dataset.idle, "true");
+  const style = descendants(host).find((element) => element.tag === "style");
+  assert.match(
+    style.textContent,
+    /button\[data-idle="true"\]\s*\{\s*color:\s*#86efac;\s*opacity:\s*1;/,
+  );
+  button.listeners.click();
+  assert.equal(controls.length, 0);
   send({ status: "playing", troops: 42000 });
   assert.equal(host.dataset.minimized, "true");
   const siloVisibilityLabel = descendants(host).find(
@@ -1318,8 +1367,8 @@ await test("per-game opt-in, safe names and returning home reset the panel", () 
   );
   assert.ok(siloVisibilityLabel);
   assert.equal(siloVisibilityLabel.hidden, true);
-  const button = descendants(host).find((element) => element.tag === "button");
   assert.equal(button.textContent, messages.expandAdvisor.message);
+  assert.equal(button.dataset.idle, "false");
   button.listeners.click();
   assert.equal(host.dataset.minimized, "false");
   assert.equal(siloVisibilityLabel.hidden, false);
@@ -1341,9 +1390,13 @@ await test("per-game opt-in, safe names and returning home reset the panel", () 
   send({ status: "idle", troops: null });
   assert.equal(host.dataset.minimized, "true");
   assert.equal(button.disabled, true);
+  assert.equal(button.textContent, messages.extensionActive.message);
+  assert.equal(button.dataset.idle, "true");
   send({ status: "playing", troops: 42000 });
   assert.equal(host.dataset.minimized, "true");
   assert.equal(button.disabled, false);
+  assert.equal(button.textContent, messages.expandAdvisor.message);
+  assert.equal(button.dataset.idle, "false");
 });
 
 await test("advisor stays enabled while waiting for spawn", () => {
@@ -1550,6 +1603,7 @@ await test("terminal states retain explicit diagnostics", () => {
     collapse.listeners.click();
     assert.equal(collapse.attributes["aria-expanded"], "false");
     assert.equal(collapse.textContent, messages.expandAdvisor.message);
+    assert.equal(collapse.dataset.idle, "false");
     assert.equal(elements[0].dataset.minimized, "true");
   }
   send({
@@ -1754,7 +1808,7 @@ await test("all phases and neighbor troop counts display correctly", () => {
         texts.some((text) => text.startsWith("Incoming attacks:")),
         false,
       );
-      assert.equal(elements.length, 6);
+      assert.equal(elements.length, 7);
     }
   }
 });

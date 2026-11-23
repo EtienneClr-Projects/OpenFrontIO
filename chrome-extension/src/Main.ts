@@ -17,11 +17,16 @@ interface RemoteBuildMenu extends Element {
   transformHandler?: RemoteTransformHandler;
 }
 
-export interface EnemySiloMarker {
+export interface ProjectedMarker {
   id: number;
   x: number;
   y: number;
   radius: number;
+}
+
+interface SiloMarkers {
+  missileSilos: ProjectedMarker[];
+  allySilos: ProjectedMarker[];
 }
 
 // A warship that captured more than this many of our trade ships is a pirate.
@@ -142,6 +147,7 @@ export function startBridge(): () => void {
   let hasAbandoned = false;
   let lastSiloSignature: string | null = null;
   let hasEnemySilos = false;
+  let hasAllySilos = false;
   let hasWarnedFirstEnemySilo = false;
   let discoveryError: Error | null = null;
   let requestedEnabled = false;
@@ -218,6 +224,7 @@ export function startBridge(): () => void {
       hasAbandoned = false;
       lastSiloSignature = null;
       hasEnemySilos = false;
+      hasAllySilos = false;
       hasWarnedFirstEnemySilo = false;
       advisor = emptyAdvisor(
         requestedEnabled ? "waiting" : "disabled",
@@ -283,7 +290,7 @@ export function startBridge(): () => void {
   };
 
   const publishBuildMarkers = (force = false) => {
-    const buildMarkers: (EnemySiloMarker & { type: UnitType })[] = [];
+    const buildMarkers: (ProjectedMarker & { type: UnitType })[] = [];
     try {
       if (requestedEnabled && game && advisor.enabled && !game.isCatchingUp()) {
         for (const [id, build] of (strategy?.snapshot.builds ?? []).entries()) {
@@ -457,8 +464,8 @@ export function startBridge(): () => void {
     }
   };
 
-  const readEnemySilos = (): EnemySiloMarker[] => {
-    let missileSilos: EnemySiloMarker[] = [];
+  const readSilos = (): SiloMarkers => {
+    const markers: SiloMarkers = { missileSilos: [], allySilos: [] };
     try {
       if (inGame && game && requestedEnabled) {
         const currentGame = game;
@@ -467,7 +474,8 @@ export function startBridge(): () => void {
         const player = currentGame.myPlayer();
         if (!player) {
           hasEnemySilos = false;
-          return missileSilos;
+          hasAllySilos = false;
+          return markers;
         }
         const transform = buildMenu?.transformHandler;
         if (
@@ -489,7 +497,6 @@ export function startBridge(): () => void {
         }
         const units = currentGame.units(UnitType.MissileSilo);
         if (!Array.isArray(units)) throw new Error("Invalid GameView units.");
-        missileSilos = [];
         for (const unit of units) {
           if (typeof unit.isActive !== "function")
             throw new Error("Missing unit.isActive().");
@@ -512,13 +519,7 @@ export function startBridge(): () => void {
           const ownerID = owner.smallID();
           if (!Number.isSafeInteger(ownerID))
             throw new Error("Invalid enemy silo owner.");
-          if (
-            !owner.isAlive() ||
-            ownerID === player.smallID() ||
-            player.isFriendly(owner)
-          ) {
-            continue;
-          }
+          if (!owner.isAlive() || ownerID === player.smallID()) continue;
           const tile = unit.tile();
           if (!Number.isSafeInteger(tile) || tile < 0)
             throw new Error("Invalid enemy silo tile.");
@@ -540,26 +541,26 @@ export function startBridge(): () => void {
           ) {
             throw new Error("Invalid enemy silo position.");
           }
-          missileSilos.push(marker);
+          markers[player.isFriendly(owner) ? "allySilos" : "missileSilos"].push(
+            marker,
+          );
         }
       }
       lastSiloError = null;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message !== lastSiloError) {
-        console.error(
-          "[OpenFront Overlay] Cannot read enemy silo positions:",
-          error,
-        );
+        console.error("[OpenFront Overlay] Cannot read silo positions:", error);
         lastSiloError = message;
       }
     }
-    hasEnemySilos = missileSilos.length > 0;
+    hasEnemySilos = markers.missileSilos.length > 0;
+    hasAllySilos = markers.allySilos.length > 0;
     if (hasEnemySilos && !hasWarnedFirstEnemySilo) {
       hasWarnedFirstEnemySilo = true;
       postWarning("OPENFRONT_OVERLAY_FIRST_ENEMY_SILO");
     }
-    return missileSilos;
+    return markers;
   };
 
   const warnIncomingBoats = () => {
@@ -755,8 +756,8 @@ export function startBridge(): () => void {
     }
   };
 
-  const readPirateMarkers = (): EnemySiloMarker[] => {
-    const markers: EnemySiloMarker[] = [];
+  const readPirateMarkers = (): ProjectedMarker[] => {
+    const markers: ProjectedMarker[] = [];
     try {
       if (inGame && game && requestedEnabled && pirateCounts.size > 0) {
         const currentGame = game;
@@ -963,8 +964,8 @@ export function startBridge(): () => void {
       );
   };
 
-  const readAbandonedMarkers = (): EnemySiloMarker[] => {
-    const markers: EnemySiloMarker[] = [];
+  const readAbandonedMarkers = (): ProjectedMarker[] => {
+    const markers: ProjectedMarker[] = [];
     try {
       if (
         inGame &&
@@ -1041,12 +1042,12 @@ export function startBridge(): () => void {
 
   const publishSiloMarkers = (force = false) => {
     if (stopped) return;
-    const missileSilos = readEnemySilos();
-    const signature = JSON.stringify(missileSilos);
+    const markers = readSilos();
+    const signature = JSON.stringify(markers);
     if (!force && signature === lastSiloSignature) return;
     lastSiloSignature = signature;
     window.postMessage(
-      { type: "OPENFRONT_OVERLAY_SILOS", missileSilos },
+      { type: "OPENFRONT_OVERLAY_SILOS", ...markers },
       window.location.origin,
     );
   };
@@ -1219,8 +1220,8 @@ export function startBridge(): () => void {
       }
       status = "unavailable";
     }
-    const missileSilos = readEnemySilos();
-    lastSiloSignature = JSON.stringify(missileSilos);
+    const siloMarkers = readSilos();
+    lastSiloSignature = JSON.stringify(siloMarkers);
     window.postMessage(
       {
         type: "OPENFRONT_OVERLAY_STATE",
@@ -1232,7 +1233,7 @@ export function startBridge(): () => void {
             ? (strategy?.snapshot ?? null)
             : null,
         controlId,
-        missileSilos,
+        ...siloMarkers,
         teamAttackMarkers,
         playerLists: {
           richPlayers: requestedEnabled ? richPlayers : [],
@@ -1284,6 +1285,7 @@ export function startBridge(): () => void {
       !game ||
       !(
         hasEnemySilos ||
+        hasAllySilos ||
         hasPirates ||
         hasAbandoned ||
         teamAttacks.length > 0 ||

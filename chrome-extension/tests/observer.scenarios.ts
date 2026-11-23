@@ -1688,6 +1688,7 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
     advisor?: AdvisorSnapshot;
     controlId?: number;
     missileSilos?: { id: number; x: number; y: number; radius: number }[];
+    allySilos?: { id: number; x: number; y: number; radius: number }[];
   }[] = [];
   const errors: unknown[][] = [];
   const originalError = console.error;
@@ -1785,14 +1786,29 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
       "silo markers are skipped while disabled",
     );
     message(fakeWindow, "https://openfront.io", true);
+    f.me.isFriendly = (player) => player === f.ally;
+    f.units.push(unit(f.ally, UnitType.MissileSilo));
+    interval!();
+    assert.deepEqual(messages.at(-1)?.missileSilos, []);
+    assert.deepEqual(messages.at(-1)?.allySilos, [
+      { id: 1, x: 15, y: 10, radius: 12 },
+    ]);
+    assert.equal(
+      messages.filter(
+        (message) => message.type === "OPENFRONT_OVERLAY_FIRST_ENEMY_SILO",
+      ).length,
+      0,
+      "an allied silo does not trigger an enemy warning",
+    );
     f.units.push(
       unit(f.enemy, UnitType.MissileSilo),
-      unit(f.ally, UnitType.MissileSilo),
       unit(f.me, UnitType.MissileSilo),
     );
-    f.me.isFriendly = (player) => player === f.ally;
     interval!();
     assert.deepEqual(messages.at(-1)?.missileSilos, [
+      { id: 1, x: 15, y: 10, radius: 12 },
+    ]);
+    assert.deepEqual(messages.at(-1)?.allySilos, [
       { id: 1, x: 15, y: 10, radius: 12 },
     ]);
     assert.equal(
@@ -1813,6 +1829,7 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
     frame(16);
     assert.equal(messages.at(-1)?.type, "OPENFRONT_OVERLAY_SILOS");
     assert.equal(messages.at(-1)?.missileSilos?.[0].x, 45);
+    assert.equal(messages.at(-1)?.allySilos?.[0].x, 45);
     assert.equal(animationFrames.size, 1, "silo sampling stays at frame rate");
     const markerFrameCount = messages.length;
     const [unchangedFrameID, unchangedFrame] = animationFrames
@@ -1838,6 +1855,11 @@ void test("MAIN bridge enforces source/origin, 500ms cadence and per-game disabl
       messages.at(-1)?.missileSilos,
       [],
       "minimizing clears silo markers",
+    );
+    assert.deepEqual(
+      messages.at(-1)?.allySilos,
+      [],
+      "minimizing clears allied silo markers",
     );
     f.me.troops = () => {
       throw new Error("fixture troops failure");

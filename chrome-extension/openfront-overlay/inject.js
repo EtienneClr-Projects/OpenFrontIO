@@ -1182,6 +1182,7 @@ var OpenFrontOverlay = (function(exports) {
 		let hasAbandoned = false;
 		let lastSiloSignature = null;
 		let hasEnemySilos = false;
+		let hasAllySilos = false;
 		let hasWarnedFirstEnemySilo = false;
 		let discoveryError = null;
 		let requestedEnabled = false;
@@ -1248,6 +1249,7 @@ var OpenFrontOverlay = (function(exports) {
 				hasAbandoned = false;
 				lastSiloSignature = null;
 				hasEnemySilos = false;
+				hasAllySilos = false;
 				hasWarnedFirstEnemySilo = false;
 				advisor = emptyAdvisor(requestedEnabled ? "waiting" : "disabled", requestedEnabled);
 			} else buildMenu = foundMenu;
@@ -1414,8 +1416,11 @@ var OpenFrontOverlay = (function(exports) {
 				pendingTraitors.clear();
 			}
 		};
-		const readEnemySilos = () => {
-			let missileSilos = [];
+		const readSilos = () => {
+			const markers = {
+				missileSilos: [],
+				allySilos: []
+			};
 			try {
 				if (inGame && game && requestedEnabled) {
 					const currentGame = game;
@@ -1423,14 +1428,14 @@ var OpenFrontOverlay = (function(exports) {
 					const player = currentGame.myPlayer();
 					if (!player) {
 						hasEnemySilos = false;
-						return missileSilos;
+						hasAllySilos = false;
+						return markers;
 					}
 					const transform = buildMenu?.transformHandler;
 					if (!transform || typeof transform.worldToScreenCoordinates !== "function" || !Number.isFinite(transform.scale) || transform.scale <= 0) throw new Error("Missing BuildMenu.transformHandler.");
 					if (typeof currentGame.units !== "function" || typeof currentGame.x !== "function" || typeof currentGame.y !== "function" || typeof player.smallID !== "function" || typeof player.isFriendly !== "function") throw new Error("Missing GameView unit coordinates.");
 					const units = currentGame.units(UnitType.MissileSilo);
 					if (!Array.isArray(units)) throw new Error("Invalid GameView units.");
-					missileSilos = [];
 					for (const unit of units) {
 						if (typeof unit.isActive !== "function") throw new Error("Missing unit.isActive().");
 						if (!unit.isActive()) continue;
@@ -1439,7 +1444,7 @@ var OpenFrontOverlay = (function(exports) {
 						if (!owner || typeof owner.smallID !== "function" || typeof owner.isAlive !== "function") throw new Error("Missing enemy silo owner data.");
 						const ownerID = owner.smallID();
 						if (!Number.isSafeInteger(ownerID)) throw new Error("Invalid enemy silo owner.");
-						if (!owner.isAlive() || ownerID === player.smallID() || player.isFriendly(owner)) continue;
+						if (!owner.isAlive() || ownerID === player.smallID()) continue;
 						const tile = unit.tile();
 						if (!Number.isSafeInteger(tile) || tile < 0) throw new Error("Invalid enemy silo tile.");
 						const world = {
@@ -1454,23 +1459,24 @@ var OpenFrontOverlay = (function(exports) {
 							radius: Math.max(12, Math.min(42, transform.scale * 1.7))
 						};
 						if (!Number.isSafeInteger(marker.id) || !Number.isFinite(marker.x) || !Number.isFinite(marker.y)) throw new Error("Invalid enemy silo position.");
-						missileSilos.push(marker);
+						markers[player.isFriendly(owner) ? "allySilos" : "missileSilos"].push(marker);
 					}
 				}
 				lastSiloError = null;
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				if (message !== lastSiloError) {
-					console.error("[OpenFront Overlay] Cannot read enemy silo positions:", error);
+					console.error("[OpenFront Overlay] Cannot read silo positions:", error);
 					lastSiloError = message;
 				}
 			}
-			hasEnemySilos = missileSilos.length > 0;
+			hasEnemySilos = markers.missileSilos.length > 0;
+			hasAllySilos = markers.allySilos.length > 0;
 			if (hasEnemySilos && !hasWarnedFirstEnemySilo) {
 				hasWarnedFirstEnemySilo = true;
 				postWarning("OPENFRONT_OVERLAY_FIRST_ENEMY_SILO");
 			}
-			return missileSilos;
+			return markers;
 		};
 		const warnIncomingBoats = () => {
 			if (stopped) return;
@@ -1760,13 +1766,13 @@ var OpenFrontOverlay = (function(exports) {
 		};
 		const publishSiloMarkers = (force = false) => {
 			if (stopped) return;
-			const missileSilos = readEnemySilos();
-			const signature = JSON.stringify(missileSilos);
+			const markers = readSilos();
+			const signature = JSON.stringify(markers);
 			if (!force && signature === lastSiloSignature) return;
 			lastSiloSignature = signature;
 			window.postMessage({
 				type: "OPENFRONT_OVERLAY_SILOS",
-				missileSilos
+				...markers
 			}, window.location.origin);
 		};
 		const scanTeamAttacks = () => {
@@ -1892,8 +1898,8 @@ var OpenFrontOverlay = (function(exports) {
 				}
 				status = "unavailable";
 			}
-			const missileSilos = readEnemySilos();
-			lastSiloSignature = JSON.stringify(missileSilos);
+			const siloMarkers = readSilos();
+			lastSiloSignature = JSON.stringify(siloMarkers);
 			window.postMessage({
 				type: "OPENFRONT_OVERLAY_STATE",
 				status,
@@ -1901,7 +1907,7 @@ var OpenFrontOverlay = (function(exports) {
 				advisor,
 				strategy: requestedEnabled && advisor.enabled ? strategy?.snapshot ?? null : null,
 				controlId,
-				missileSilos,
+				...siloMarkers,
 				teamAttackMarkers,
 				playerLists: {
 					richPlayers: requestedEnabled ? richPlayers : [],
@@ -1934,7 +1940,7 @@ var OpenFrontOverlay = (function(exports) {
 			publish();
 		};
 		const scheduleSiloFrame = () => {
-			if (stopped || !inGame || !game || !(hasEnemySilos || hasPirates || hasAbandoned || teamAttacks.length > 0 || strategy?.snapshot.builds.some((b) => b.tile !== null)) || siloFrame !== null) return;
+			if (stopped || !inGame || !game || !(hasEnemySilos || hasAllySilos || hasPirates || hasAbandoned || teamAttacks.length > 0 || strategy?.snapshot.builds.some((b) => b.tile !== null)) || siloFrame !== null) return;
 			siloFrame = window.requestAnimationFrame(() => {
 				siloFrame = null;
 				if (!inGame || !game || stopped) return;

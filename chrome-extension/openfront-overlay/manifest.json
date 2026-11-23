@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "minimum_chrome_version": "111",
   "name": "OpenFront Overlay",
-  "version": "0.3.0",
+  "version": "0.3.3",
   "description": "__MSG_extensionDescription__",
   "default_locale": "en",
   "content_scripts": [
